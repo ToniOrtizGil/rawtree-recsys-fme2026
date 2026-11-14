@@ -61,3 +61,29 @@ def test_stream_log_collects_judged_rows():
     X, y, c, g = collect(sim, state, feed, SessionHeuristicPolicy(), minutes=1.0, log=lambda *_: None)
     assert X.shape == (len(y), len(FEATURES)) and len(y) == len(c) == len(g) and len(y) % 10 == 0
     assert y.sum() <= c.sum() and y.sum() > 0
+
+
+def test_rows_from_logs_match_labels_of_served_stream():
+    """Replaying stored tables (requests, feedback, events, updates) rebuilds the rows we served."""
+    from rtrec.offline.feedbacklog import rows_from_logs
+    from rtrec.offline.replay import state_from_history
+    sim = make_simulator(seed=8, n_products=150, n_users=80)
+    d = sim.history(days=4, sessions_per_day=100)
+    state, feed = state_from_history(d.catalog, d.history_sessions, d.history_events)
+    state2, feed2 = state_from_history(d.catalog, d.history_sessions, d.history_events)
+    pol = SessionHeuristicPolicy()
+    reqs, evs, ups, fbs = [], [], [], []
+    t = sim.now
+    for _ in range(120):
+        t += 0.5
+        tick = sim.advance(t)
+        feed.on_catalog_updates(tick.catalog_updates)
+        feed.on_events(tick.events)
+        reqs += tick.requests; evs += tick.events; ups += tick.catalog_updates
+        for r in tick.requests:
+            items = finalize(pol.recommend(r, state), state)
+            fbs.append(sim.judge({"request_id": r["request_id"], "items": items, "model_version": "v1"}, t))
+    X, y, c, g = rows_from_logs(state2, feed2, reqs, fbs, evs, ups)
+    assert len(y) == 10 * len(fbs)
+    assert y.sum() == sum(bool(f["purchased"]) for f in fbs)
+    assert c.sum() == sum(bool(f["clicked"]) for f in fbs)
