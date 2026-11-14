@@ -130,3 +130,19 @@ def test_hooks_from_threads_while_reading():
     for t in ts:
         t.join()
     assert not errs
+
+
+def test_group_lift_against_history_baseline_is_sharp():
+    s = State()
+    live.init(s, [_prod(f"p{i}", f"s{i % 10}") for i in range(100)])
+    rng = random.Random(3)
+    hist = [_ev(T0 - 86400 + i, f"p{rng.randrange(100)}") for i in range(20000)]   # uniform shares
+    live.seed_history(s, hist)
+    rows = []
+    for i in range(6000):                     # 20 min live: s3 gets 4x its normal share of views
+        p = f"p{rng.randrange(10) * 10 + 3}" if rng.random() < 0.3 else f"p{rng.randrange(100)}"
+        rows.append(_ev(T0 + i * 0.2, p, uid=f"u{i}", sid=f"x{i}"))
+    live.on_events(rows, s)
+    live.learner(s).flush(s)
+    sl = s.live["subcat_lift"]
+    assert sl["s3"] > 2.5 and max(v for k, v in sl.items() if k != "s3") < 1.0

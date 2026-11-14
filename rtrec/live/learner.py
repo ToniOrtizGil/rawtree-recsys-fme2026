@@ -48,7 +48,7 @@ class LiveLearner:
             from .feedback import FeedbackLearner
             self.feedback = FeedbackLearner()
 
-    _HOOKS = ("init", "on_catalog_updates", "on_events", "on_requests", "on_feedback", "flush")
+    _HOOKS = ("init", "seed_history", "on_catalog_updates", "on_events", "on_requests", "on_feedback", "flush")
 
     def _wrap(self):
         # hooks may be called from several runtime threads: serialise them (readers never lock)
@@ -80,6 +80,10 @@ class LiveLearner:
         self.catalog.init(state, catalog_rows)
         from .coldstart import refresh_new_product_neighbours
         refresh_new_product_neighbours(state)
+
+    def seed_history(self, state: State, history_events) -> None:
+        """Optional, at start-up: long-run subcategory/brand shares for sharper trend lifts."""
+        self.trends.seed_baseline(history_events, state.catalog)
 
     def on_catalog_updates(self, rows, state: State) -> None:
         t0 = time.perf_counter()
