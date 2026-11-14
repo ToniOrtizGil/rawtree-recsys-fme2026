@@ -6,17 +6,37 @@ live-learning piece is measured on its own against the same base:
 """
 from __future__ import annotations
 
+from rtrec import live
+
 from .policy import LiveSessionPolicy, LiveWrapper
+
+
+def _seed(state, dump):
+    """The arbiter only calls live.init; seed long-run shares so group lifts are sharp."""
+    if state is not None and dump is not None and not live.learner(state).trends.baseline:
+        live.seed_history(state, dump.history_events)
 
 
 def _heur(state, dump):
     from rtrec.model.policies import SessionHeuristicPolicy
+    _seed(state, dump)
     return SessionHeuristicPolicy(state, dump)
 
 
 def _ranker(state, dump):
     from rtrec.model.policies import RankerPolicy
+    _seed(state, dump)
     return RankerPolicy(state, dump)
+
+
+class HeurSeeded:
+    """A3's heuristic unchanged, but with history-seeded (sharper) subcat/brand lifts as features."""
+    def __init__(self, state=None, dump=None):
+        self.base = _heur(state, dump)
+        self.name = "v1-seeded"
+
+    def recommend(self, req, state):
+        return self.base.recommend(req, state)
 
 
 class LiveSession(LiveSessionPolicy):
@@ -38,6 +58,9 @@ HeurTrend = _variant(_heur, "v1+trend", cold_merge=False, alpha=0.0)
 HeurCalib = _variant(_heur, "v1+calib", cold_merge=False, beta=0.0)
 HeurColdRerank = _variant(_heur, "v1+cold+rerank")
 HeurExplore = _variant(_heur, "v1+explore", cold_merge=False, rerank=False, explore=True)
+HeurGroupTrend = _variant(_heur, "v1+grouptrend", cold_merge=False, alpha=0.0, beta=0.0, group_beta=1.0, gamma=1.0)
+HeurGroupTrendSoft = _variant(_heur, "v1+grouptrend-soft", cold_merge=False, alpha=0.0, beta=0.0, group_beta=0.5,
+                              gamma=1.5)
 HeurAll = _variant(_heur, "v1+all", explore=True)
 RankCold = _variant(_ranker, "v2+cold", rerank=False)
 RankTrend = _variant(_ranker, "v2+trend", cold_merge=False, alpha=0.0)

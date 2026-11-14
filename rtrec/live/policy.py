@@ -45,7 +45,8 @@ class LiveWrapper:
     rerank: bool = True
     explore: bool = False
     alpha: float = 1.0          # weight of the calibration multiplier
-    beta: float = 0.5           # weight of the trend lift
+    beta: float = 0.5           # weight of the product trend lift
+    group_beta: float = 0.0     # weight of subcategory x brand lift (simulator trends hit whole groups)
     gamma: float = 1.0          # rank prior 1 / (rank + 1)^gamma
     repeat_penalty: float = 0.2
     depth: int = 40             # how much of the base ranking is re-ranked
@@ -72,6 +73,7 @@ class LiveWrapper:
         calib = live.get("calib_product") or {}
         calib_sub = live.get("calib_subcat") or {}
         lift = live.get("trend_lift") or {}
+        sub_l, br_l = live.get("subcat_lift") or {}, live.get("brand_lift") or {}
         cat = state.catalog
         bought = _bought(req, state)
         lo, hi = self.lift_cap
@@ -83,6 +85,10 @@ class LiveWrapper:
                 m = calib_sub.get((cat.get(p) or {}).get("subcategory"), 1.0)
             s *= m ** self.alpha
             s *= min(max(lift.get(p, 1.0), lo), hi) ** self.beta
+            if self.group_beta:
+                row = cat.get(p) or {}
+                g = sub_l.get(row.get("subcategory"), 1.0) * br_l.get(row.get("brand"), 1.0)
+                s *= min(max(g, lo), 2 * hi) ** self.group_beta
             if p in bought:
                 s *= self.repeat_penalty
             scored.append((s, -r, p))
