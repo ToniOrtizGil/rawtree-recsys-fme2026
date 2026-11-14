@@ -13,7 +13,7 @@ from dashboard.demo import OUTAGE_EVERY_S, OUTAGE_LEN_S, DemoStore
 from dashboard.metrics import FB
 from dashboard.server import full_snapshot, make_server
 
-NOW = 1_763_197_200.0
+NOW = 1_794_733_200.0      # 2026-11-15 09:00:00 UTC (start of the final), fixed
 
 
 def fb(i, ok=True, reason="", lat=900.0, buy=False, version="v1", cold=False, ts=None):
@@ -204,7 +204,9 @@ def test_server_endpoints():
         except urllib.error.HTTPError as e:   # 503 when critical
             health = e.read().decode()
         assert "light=" in health
-        assert urllib.request.urlopen(base + "/runbook").status == 200
+        rb = urllib.request.urlopen(base + "/runbook").read().decode()
+        for anchor in {v[1] for v in alerts.CAUSE.values()} | {"r0-triage", "r4-machine", "r5-stalled"}:
+            assert f'<a id="{anchor}"></a>' in rb             # every alert link lands on a section
         with pytest.raises(urllib.error.HTTPError):
             urllib.request.urlopen(base + "/nope")
     finally:

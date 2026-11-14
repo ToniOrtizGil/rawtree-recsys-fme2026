@@ -17,7 +17,7 @@ from dashboard.collector import Collector  # noqa: E402
 from dashboard.demo import DemoStore  # noqa: E402
 from dashboard.metrics import to_iso  # noqa: E402
 
-NOW = 1_763_197_200.0      # 2025-11-15 09:00:00 UTC, fixed
+NOW = 1_794_733_200.0      # 2026-11-15 09:00:00 UTC (start of the final), fixed
 
 
 def _lit(t: float) -> str:
@@ -91,7 +91,7 @@ def test_versions_lookup_and_heartbeat(world):
     store, col, sess = world
     ids = list(store.submissions)[:50]
     rows = q(sess, queries.versions_for("team_demo", ids + ["x'; DROP TABLE y; --"]))
-    assert {r["request_id"]: r["model_version"] for r in rows} == store.submissions_for(ids)
+    assert {r["request_id"]: r["model_version"] for r in rows} == {i: store.submissions[i]["model_version"] for i in ids}
     (hb,) = q(sess, queries.last_heartbeat("team_demo"))
     assert hb["kind"] == "heartbeat" and hb["role"] == "primary"
 

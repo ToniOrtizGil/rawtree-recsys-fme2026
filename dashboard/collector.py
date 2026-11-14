@@ -5,9 +5,10 @@ must still show it (feedback keeps arriving, all `missing`). So it reads the org
 
 Reads are incremental (cursor = newest ts seen; stores return rows from cursor - overlap; we dedupe by key)
 and cheap: requests/feedback are ~3 rows/s; organic events (~50/s) are folded into per-minute counters
-instead of being kept. Two things the Store protocol has no reader for are found by duck typing:
-- model_version of each answer: store.submissions_for(ids) if present, else SQL on team_NN.submissions;
-- heartbeat rows in team_NN.scratch: store.scratch_since(cursor) if present, else SQL.
+instead of being kept. Our own tables, read back:
+- model_version of each answer: store.submissions_since (protocol), else store.submissions_for(ids), else SQL;
+- heartbeat rows: store.scratch_since(cursor, kind="heartbeat") (protocol), else SQL.
+Optional readers are always called by keyword (implementations disagree on argument order).
 """
 from __future__ import annotations
 
@@ -30,7 +31,9 @@ class Collector:
         self.lookback_s, self.sql_every_s = lookback_s, sql_every_s
         now = self.now()
         self.cur = {"requests": now - lookback_s, "feedback": now - lookback_s,
-                    "updates": now - lookback_s, "events": now - events_lookback_s, "scratch": now - 120}
+                    "updates": now - lookback_s, "events": now - events_lookback_s, "scratch": now - 120,
+                    "submissions": now - lookback_s}
+        self.versions: OrderedDict[str, str] = OrderedDict()     # request_id -> model_version
         self.started = now
         self.lock = threading.RLock()
         self.requests: OrderedDict[str, tuple] = OrderedDict()   # rid -> (ts, is_new, views, context, user)
@@ -51,7 +54,8 @@ class Collector:
 
     # ------------------------------------------------------------------ helpers
     def now(self) -> float:
-        f = getattr(self.store, "now", None)
+        """The store's clock (simulated in tests and in the FakeStore), else wall time."""
+        f = getattr(self.store, "now", None) or getattr(getattr(self.store, "clock", None), "now", None)
         return float(f()) if callable(f) else time.time()
 
     def _read(self, name: str, fn, key: str, limit: int) -> list[dict]:
@@ -95,6 +99,7 @@ class Collector:
             self._poll_requests()
             self._poll_feedback()
             self._poll_events()
+            self._poll_submissions()
             self._resolve_versions()
             self._poll_heartbeat()
             self._prune()
@@ -162,6 +167,22 @@ class Collector:
                 self.buys_min.setdefault(m, Counter())[pid] += 1
         self._seen_events = {k: t for k, t in self._seen_events.items() if t >= horizon}
 
+    def _poll_submissions(self) -> None:
+        """Submissions carry no ts: the store filters on insert time; we re-read the last minute and dedupe."""
+        if not hasattr(self.store, "submissions_since"):
+            return
+        try:
+            rows = self.store.submissions_since(self.cur["submissions"], limit=50_000)
+            self.errors.pop("submissions", None)
+        except Exception as e:  # noqa: BLE001
+            self.errors["submissions"] = f"{type(e).__name__}: {e}"[:300]
+            return
+        for r in rows:
+            self.versions[str(r.get("request_id"))] = str(r.get("model_version") or "")
+        self.cur["submissions"] = self.now() - 60
+        while len(self.versions) > 100_000:
+            self.versions.popitem(last=False)
+
     def _resolve_versions(self, max_batches: int = 10) -> None:
         """Attach model_version to answers we served (needed for the A/B table). Batches of 400 ids."""
         retry: list[str] = []
@@ -171,7 +192,9 @@ class Collector:
                 break
             batch = [self._unresolved.popleft() for _ in range(min(400, len(self._unresolved)))]
             try:
-                if hasattr(self.store, "submissions_for"):
+                if hasattr(self.store, "submissions_since"):
+                    found = {rid: self.versions[rid] for rid in batch if rid in self.versions}
+                elif hasattr(self.store, "submissions_for"):
                     found = self.store.submissions_for(batch)
                 elif self.sql_capable():
                     rows = self.store.query(queries.versions_for(self.team, batch))
@@ -201,7 +224,8 @@ class Collector:
     def _poll_heartbeat(self) -> None:
         rows: list[dict] = []
         if hasattr(self.store, "scratch_since"):
-            rows = self._read("scratch", self.store.scratch_since, "scratch", 10_000)
+            rows = self._read("scratch", lambda c, n: self.store.scratch_since(c, kind="heartbeat", limit=n),
+                              "scratch", 10_000)
         elif self.sql_capable():
             try:
                 rows = self.store.query(queries.last_heartbeat(self.team))
@@ -210,7 +234,7 @@ class Collector:
                 self.errors["scratch"] = f"{type(e).__name__}: {e}"[:300]
         for r in rows:
             if (r.get("kind") or r.get("type")) == "heartbeat":
-                ts = to_epoch(r.get("ts"))
+                ts = to_epoch(r.get("ts_epoch") or r.get("ts"))
                 if ts >= self.last["heartbeat"]:
                     self.last["heartbeat"], self.heartbeat = ts, r
 
