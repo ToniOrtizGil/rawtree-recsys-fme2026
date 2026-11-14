@@ -179,7 +179,7 @@ class Forensics:
                        f"Already bought: x{lr:.2f} clicks per examination ({int(g_rep.loc[True, 'pairs']) if True in g_rep.index else 0} pairs). "
                        f"Subcategory seen in an earlier session: x{la:.2f}. "
                        f"{ret:.0%} of impressions are by shoppers already active in the first week of history.",
-                       pd.concat({"bought_before": g_rep, "known_affinity": g_aff}),
+                       pd.concat({"bought_before": g_rep, "known_affinity": g_aff}, names=["feature"]),
                        {"repeat_lift": lr, "affinity_lift": la})
 
     # -------------------------------------------------------------- H6
@@ -372,7 +372,8 @@ def _fmt(x) -> str:
 
 def md_table(df: pd.DataFrame) -> str:
     """Markdown table without the optional `tabulate` dependency."""
-    d = df.reset_index() if not isinstance(df.index, pd.RangeIndex) else df
+    named = any(n is not None for n in df.index.names)
+    d = df.reset_index() if named or not isinstance(df.index, pd.RangeIndex) else df
     cols = [str(c) for c in d.columns]
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     lines += ["| " + " | ".join(_fmt(v) for v in row) + " |" for row in d.itertuples(index=False)]
