@@ -55,7 +55,7 @@ log = logging.getLogger("rtrec.serve")
 @dataclass
 class ServeConfig:
     poll_interval: float = 0.2          # shop.requests polling (organisers' baseline: 0.3 s)
-    request_pollers: int = 2            # staggered pollers: one stalled HTTP call never delays a request
+    request_pollers: int = 3            # staggered (every ~70 ms): live query RTT is ~250 ms, one slow call never delays a request
     catalog_interval: float = 0.25      # stock must be exact: one stock-out invalidates the whole answer
     events_interval: float = 1.0
     feedback_interval: float = 2.0
