@@ -97,6 +97,8 @@ def run(policy_factory, sim, warmup_s: float, eval_s: float, start: float, step:
     dump = sim.history()
     state = State()
     live.init(state, dump.catalog)
+    if hasattr(live, "seed_history"):   # long-run shares for group-trend lifts (A4)
+        live.seed_history(state, dump.history_events)
     ranking = best_sellers(dump.history_events)
     state.safe_list = ranking[:200]
     baseline = BestSellerPolicy(ranking)
