@@ -170,7 +170,7 @@ def main() -> None:
     from sim.shop import make_simulator  # A2
     for spec in args.policies:
         sim = make_simulator(seed=args.seed)
-        start = getattr(sim, "start_ts", time.time())
+        start = getattr(sim, "stream_start", None) or getattr(sim, "start_ts")
         rep = run(load(spec), sim, args.warmup_min * 60, args.minutes * 60, start)
         print(json.dumps(rep.as_dict()))
 
