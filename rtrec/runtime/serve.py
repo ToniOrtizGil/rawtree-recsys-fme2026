@@ -184,6 +184,9 @@ class Server:
             log.info("policy %s built in %.1f s", getattr(p, "name", "?"), time.perf_counter() - t0)
         except Exception:
             log.exception("policy factory failed; serving with the fallback policy")
+            self.metrics.inc("policy_failed")
+            log.error("DEGRADED: policy failed to load -> serving fallback-recent (0 model conversion). "
+                      "Fix the model/code and restart.")
 
     def _adopt_policy(self) -> None:
         """Serving thread: install a policy built in the background, with what it computed."""
@@ -378,7 +381,11 @@ class Server:
         if self._is_due("tick", now, self.cfg.tick_interval):
             self.hooks.call("on_tick", self.state, now)
         if self._is_due("status", now, self.cfg.status_interval):
-            self._report_status(now)
+            try:  # observability must never take serving down
+                self._report_status(now)
+            except Exception:  # noqa: BLE001
+                self.metrics.inc("status_errors")
+                log.exception("status report failed (serving continues)")
         if self.state_dir and self._is_due("snapshot", now, self.cfg.snapshot_interval, first=False):
             threading.Thread(target=self.save_snapshot, name="snapshot", daemon=True).start()
 
@@ -419,8 +426,41 @@ class Server:
                   "hook_slow": dict(self.hooks.slow), "now": now})
         return s
 
+    L2_ALERT_SHARE = 0.5      # > 50 % of answers from level 2 ...
+    L2_ALERT_AFTER_S = 180.0  # ... for 3 minutes in a row -> alert a human
+
+    def _check_level2(self, now: float, c: dict) -> None:
+        """Alert when the fallback (level 2/3) carries the traffic for minutes: on 14-nov it served ~40 min
+        and nobody noticed. Logs an ERROR every status tick and runs $RTREC_ALERT_CMD (default: a macOS
+        notification) once per episode."""
+        tot = c.get("served_level1", 0) + c.get("served_level2", 0) + c.get("served_level3", 0)
+        fb = c.get("served_level2", 0) + c.get("served_level3", 0)
+        prev = getattr(self, "_l2_prev", None)
+        self._l2_prev = (tot, fb)
+        if prev is None or tot - prev[0] < 5:
+            return
+        share = (fb - prev[1]) / (tot - prev[0])
+        if share <= self.L2_ALERT_SHARE:
+            self._l2_since, self._l2_alerted = None, False
+            return
+        self._l2_since = getattr(self, "_l2_since", None) or now
+        if now - self._l2_since < self.L2_ALERT_AFTER_S:
+            return
+        msg = f"DEGRADED: {share:.0%} of answers from the fallback for {now - self._l2_since:.0f} s (policy={self.runner.name})"
+        log.error(msg)
+        self.metrics.inc("alerts_level2")
+        if not getattr(self, "_l2_alerted", False):
+            self._l2_alerted = True
+            notify(msg)
+
     def _report_status(self, now: float) -> None:
         s = self.status()
+        up = now - getattr(self, "_t0_status", now)
+        self.__dict__.setdefault("_t0_status", now)
+        if self.policy_factory is not None and self.runner.policy is None and up > 300:
+            # loud, repeated: the model never came up (or failed) -> we are serving the fallback
+            log.error("DEGRADED: no model policy after %.0f s, serving fallback-recent", up)
+        self._check_level2(now, s["counters"])
         c, a = s["counters"], s["ack_latency_s"]
         log.info("served=%d l1=%d l2=%d l3=%d stale=%d late_drop=%d ins_err=%d ack p50/p99=%s/%s fb=%s",
                  c.get("submitted", 0), c.get("served_level1", 0), c.get("served_level2", 0),
@@ -643,6 +683,21 @@ def as_factory(obj):
 def build_store(kind: str, args):
     from rtrec.stores import make_store
     return make_store(kind, seed=args.seed, rate_multiplier=args.rate_multiplier)
+
+
+def notify(msg: str) -> None:
+    """Best-effort alert to a human: $RTREC_ALERT_CMD (gets the message as $1), else a macOS notification."""
+    import shutil
+    import subprocess
+    cmd = os.environ.get("RTREC_ALERT_CMD")
+    try:
+        if cmd:
+            subprocess.Popen(["/bin/sh", "-c", cmd, "alert", msg])
+        elif shutil.which("osascript"):
+            safe = msg.replace('"', "'")
+            subprocess.Popen(["osascript", "-e", f'display notification "{safe}" with title "rtrec team_36" sound name "Sosumi"'])
+    except Exception:  # noqa: BLE001
+        log.exception("alert command failed")
 
 
 def main(argv: list[str] | None = None) -> int:

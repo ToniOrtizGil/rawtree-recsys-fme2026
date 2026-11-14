@@ -3,9 +3,9 @@
     python scripts/train_ranker.py --sim --seed 7            # A2's simulator (toy shop if absent)
     python scripts/train_ranker.py --parquet data/            # the real history download (A2 layout)
 
-Steps (rtrec/offline/pipeline.py): artefacts from the first half of the history; training rows from
-the next 35 % with features as of each impression; early stopping on the last part of that window;
-then an offline evaluation of baseline / v1 / v2 on the final 15 % with IPS, SNIPS, DM and DR
+Steps (rtrec/offline/pipeline.py), chronological 70/20/10 split: artefacts from [0,35 %) and training rows
+from [35,70 %) (train), early stopping on [70,80 %) (validation), offline evaluation of
+baseline / v1 / v2 on the untouched last 20 % (test) with IPS, SNIPS, DM and DR, split by new/cold/warm
 estimates (and, on a simulator, the ground truth next to them).
 """
 from __future__ import annotations
@@ -45,6 +45,13 @@ def main() -> None:
                     help="simulator only: also serve this many minutes with v1 + exploration and train on the feedback")
     ap.add_argument("--explore", type=float, default=0.2)
     ap.add_argument("--out", default="artifacts/ranker.txt")
+    ap.add_argument("--final", action="store_true",
+                    help="production refit once the design is validated: same recipe, window moved to the most "
+                         "recent data (artefacts [0,50 %), rows [50,100 %] incl. the live stream, no test); "
+                         "boosting rounds taken from --rounds-from (the validated run's early stopping)")
+    ap.add_argument("--ipw-clip", type=float, default=0.0,
+                    help="inverse-propensity row weights min(1/p, clip) against the old carousel's bias (0 = off)")
+    ap.add_argument("--rounds-from", default="artifacts/ranker_v3.metrics.json")
     args = ap.parse_args()
 
     tic = time.time()
@@ -55,7 +62,15 @@ def main() -> None:
         print(f"{kind}: {len(dump.history_sessions)} sessions, {len(dump.history_events)} events")
     else:
         kind, dump = "parquet", load_parquet(args.parquet)
-    p = prepare(dump.catalog, dump.history_sessions, dump.history_events, sample=args.sample)
+    cuts = dict(a=0.50, v=1.0, b=1.0) if args.final else {}
+    fixed = None
+    if args.final:
+        r = json.loads(Path(args.rounds_from).read_text())["ranker"]
+        fixed = (max(50, int(r["click_best_iter"] * 1.1)), max(30, int(r["buy_best_iter"] * 1.1)))  # +10 %: more data
+        print(f"final refit with fixed rounds {fixed} from {args.rounds_from}")
+    if args.final:
+        args.eval_impressions = 0
+    p = prepare(dump.catalog, dump.history_sessions, dump.history_events, sample=args.sample, ipw_clip=args.ipw_clip, **cuts)
     if args.stream_minutes and sim is not None:
         # practice-round analogue: serve v1 with exploration on the live stream, learn from the feedback
         state, feed = state_from_history(dump.catalog, dump.history_sessions, dump.history_events)
@@ -63,7 +78,7 @@ def main() -> None:
                                  seed=args.seed)
         p = replace(p, X=np.vstack([p.X, Xs]), y=np.concatenate([p.y, ys]), c=np.concatenate([p.c, cs]),
                     groups=np.concatenate([p.groups, gs + (p.groups.max() + 1 if len(p.groups) else 0)]))
-    booster, metrics = fit(p)
+    booster, metrics = fit(p, fixed_rounds=fixed)
     rk.save(booster, args.out, meta={"source": kind, "seed": args.seed, **metrics})
     print(f"saved {args.out}")
     Path(args.out).with_suffix(".metrics.json").write_text(json.dumps({"source": kind, "ranker": metrics}, default=float))

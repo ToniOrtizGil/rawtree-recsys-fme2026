@@ -39,7 +39,22 @@ if [ "$SMOKE" = 1 ]; then
   exec .venv/bin/python ops/smoke_rawtree.py
 fi
 
+# Frozen release: run from a copy of the code taken now, so editing the working tree (or a supervisor
+# restart after an edit) can never pair a model with code it was not trained with. Data, artefacts,
+# logs and .env are shared through symlinks. RTREC_NO_RELEASE=1 runs from the working tree.
+ROOT="$(pwd)"
+if [ "${RTREC_NO_RELEASE:-0}" != 1 ]; then
+  REL="releases/$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+  mkdir -p "$REL" logs artifacts data
+  cp -R rtrec dashboard sim ops scripts pyproject.toml "$REL/"
+  for d in artifacts data logs .env; do [ -e "$d" ] && ln -sfn "$ROOT/$d" "$REL/$d"; done
+  ln -sfn "$ROOT/.venv" "$REL/.venv"
+  echo "release $REL" >&2
+  cd "$REL"
+fi
+
 export RTREC_STORE="$STORE" RTREC_ROLE="$ROLE"
+export RTREC_OFFLINE_CACHE="${RTREC_OFFLINE_CACHE:-artifacts/cache}"   # restart in ~15 s (see policies.py)
 export RTREC_STATE_DIR="${RTREC_STATE_DIR:-artifacts/runtime-$ROLE}"
 mkdir -p logs "$RTREC_STATE_DIR"
 # keep the machine awake while serving, where the tool exists (macOS caffeinate / systemd-inhibit)

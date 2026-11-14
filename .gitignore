@@ -9,3 +9,6 @@ __pycache__/
 *.parquet
 *.lgb
 .pytest_cache/
+/data_final/
+/logs_*.txt
+/releases/

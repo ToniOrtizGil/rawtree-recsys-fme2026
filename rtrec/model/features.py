@@ -22,7 +22,7 @@ PAGES = {"home": 0, "product": 1, "category": 2}
 
 FEATURES = [
     # session relation
-    "viewed_count", "viewed_recency_rank", "sub_views_w", "cat_views_w", "brand_views_w", "coview",
+    "viewed_count", "viewed_recency_rank", "sub_views_w", "cat_views_w", "brand_views_w", "coview", "sknn",
     "n_views", "price_ratio_session", "sources",
     # product attributes / priors
     "log_price", "price_rel_sub", "conv", "cart_rate", "car_lift", "log_car_imps", "log_views_pd",
@@ -73,6 +73,8 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
     cov: dict[str, float] = {}
     vprices = []
     coview, live_cov = off.get("coview", {}), live.get("coview") or {}
+    v2b: dict = off.get("v2b", {})
+    sknn: dict[str, float] = {}
     for k, v in enumerate(views):
         vcount[v] = vcount.get(v, 0) + 1
         vrank.setdefault(v, k)
@@ -89,6 +91,8 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
                 cov[q] = cov.get(q, 0.0) + w / (r + 1)
             for q, c in live_cov.get(v, ()):
                 cov[q] = cov.get(q, 0.0) + w * 0.1 * c
+            for q, c in v2b.get(v, ()):
+                sknn[q] = sknn.get(q, 0.0) + w * c
     vmed = float(np.median(vprices)) if vprices else 0.0
 
     # --- content: idf-weighted description words of what they viewed (session) and engaged with (profile) ---
@@ -168,7 +172,7 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
         created = to_epoch(p.get("created_at")) if p.get("created_at") else 0.0
         X[i] = (
             vcount.get(pid, 0), vrank.get(pid, 99), sub_w.get(sub, 0.0), cat_w.get(ca, 0.0), brand_w.get(br, 0.0),
-            cov.get(pid, 0.0), len(views), math.log(price / vmed) if vmed else 0.0, srcs.get(pid, 0),
+            cov.get(pid, 0.0), sknn.get(pid, 0.0), len(views), math.log(price / vmed) if vmed else 0.0, srcs.get(pid, 0),
             math.log(price), math.log(price / ss.median_price) if ss.median_price else 0.0,
             conv, cart, lift,
             math.log1p(ps.car_imps), math.log1p(ps.views_pd), math.log1p(ps.purch_pd),

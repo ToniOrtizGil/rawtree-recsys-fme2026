@@ -49,6 +49,7 @@ def generate(req: Request, state: State, n: int = N_CANDIDATES) -> dict[str, int
     similar_new, neighbours = live.get("similar_new") or {}, live.get("new_neighbours") or {}
     for v in views[:5]:
         add((q for q, _ in cov.get(v, ())), SRC_COVIEW, 20)
+        add((q for q, _ in off.get("v2b", {}).get(v, ())), SRC_COVIEW, 10)  # viewed v -> bought q
         add((q for q, _ in live_cov.get(v, ())), SRC_COVIEW, 10)
         add(similar_new.get(v, ()), SRC_NEW, 5)      # new look-alikes of what they viewed (A4)
         add(neighbours.get(v, ()), SRC_SUB, 6)       # viewed a new product: its content neighbours

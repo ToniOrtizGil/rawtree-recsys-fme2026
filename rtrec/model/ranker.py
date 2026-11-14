@@ -33,9 +33,10 @@ SLOT = F_INDEX["slot"]
 
 
 def train_booster(X: np.ndarray, y: np.ndarray, X_val: np.ndarray | None = None, y_val: np.ndarray | None = None,
-                  params: dict | None = None, rounds: int = 600) -> lgb.Booster:
+                  params: dict | None = None, rounds: int = 600, weight: np.ndarray | None = None) -> lgb.Booster:
     p = {**DEFAULT_PARAMS, **(params or {})}
-    dtrain = lgb.Dataset(X, y, feature_name=FEATURES, categorical_feature=CATEGORICAL, free_raw_data=False)
+    dtrain = lgb.Dataset(X, y, weight=weight, feature_name=FEATURES, categorical_feature=CATEGORICAL,
+                         free_raw_data=False)
     valid, cbs = [], []
     if X_val is not None and len(X_val) and 0 < y_val.sum() < len(y_val):
         valid = [lgb.Dataset(X_val, y_val, reference=dtrain)]
@@ -61,16 +62,22 @@ class Ranker:
         return pc * self.buy.predict(Xb, num_threads=1)
 
 
-def train(X: np.ndarray, y_buy: np.ndarray, y_click: np.ndarray, val: np.ndarray, rounds: int = 600) -> tuple[Ranker, dict]:
-    """val: boolean mask of validation rows (the latest impressions)."""
+def train(X: np.ndarray, y_buy: np.ndarray, y_click: np.ndarray, val: np.ndarray, rounds: int = 600,
+          fixed_rounds: tuple[int, int] | None = None, weight: np.ndarray | None = None) -> tuple[Ranker, dict]:
+    """val: boolean mask of validation rows (the latest impressions). With no validation rows (final refit
+    on everything), `fixed_rounds` = (click, buy) iterations found by early stopping in the validated run."""
     tr = ~val
-    click = train_booster(X[tr], y_click[tr], X[val], y_click[val], rounds=rounds)
+    rc, rb = fixed_rounds if (fixed_rounds and not val.any()) else (rounds, rounds)
+    w = weight if weight is not None else None
+    click = train_booster(X[tr], y_click[tr], X[val], y_click[val], rounds=rc,
+                          weight=None if w is None else w[tr])
     cl = y_click > 0
     Xc = X[cl].copy()
     Xc[:, SLOT] = 0.0
-    buy = train_booster(Xc[tr[cl]], y_buy[cl][tr[cl]], Xc[val[cl]], y_buy[cl][val[cl]], rounds=rounds,
+    buy = train_booster(Xc[tr[cl]], y_buy[cl][tr[cl]], Xc[val[cl]], y_buy[cl][val[cl]], rounds=rb,
+                        weight=None if w is None else w[cl][tr[cl]],
                         params={"min_data_in_leaf": 30, "num_leaves": 15})
-    return Ranker(click, buy), {"click_best_iter": click.best_iteration, "buy_best_iter": buy.best_iteration,
+    return Ranker(click, buy), {"click_best_iter": click.best_iteration or rc, "buy_best_iter": buy.best_iteration or rb,
                                 "clicked_rows": int(cl.sum())}
 
 
@@ -80,7 +87,8 @@ def save(model: Ranker, path: str | Path, meta: dict | None = None) -> None:
     model.click.save_model(str(path))
     if model.buy is not None:
         model.buy.save_model(str(_buy_path(path)))
-    Path(str(path) + ".json").write_text(json.dumps({"features": FEATURES, "two_stage": model.buy is not None,
+    Path(str(path) + ".json").write_text(json.dumps({"features": FEATURES, "features_code": features_code_hash(),
+                                                     "two_stage": model.buy is not None,
                                                      **(meta or {})}, indent=2, default=float))
 
 
@@ -89,12 +97,21 @@ def load(path: str | Path) -> Ranker:
     meta = json.loads(Path(str(path) + ".json").read_text())
     if meta["features"] != FEATURES:
         raise ValueError(f"model {path} was trained with different features; retrain it")
+    if meta.get("features_code") and meta["features_code"] != features_code_hash():
+        raise ValueError(f"model {path} was trained with a different featurize() code; retrain it")
     buy = lgb.Booster(model_file=str(_buy_path(path))) if meta.get("two_stage") else None
     return Ranker(lgb.Booster(model_file=str(path)), buy)
 
 
 def predict(model: Ranker, X: np.ndarray) -> np.ndarray:
     return model.predict(X)
+
+
+def features_code_hash() -> str:
+    """Same feature names can hide a changed computation: pin the code that builds the rows too."""
+    import hashlib
+    here = Path(__file__).parent
+    return hashlib.sha256(b"".join((here / f).read_bytes() for f in ("features.py", "candidates.py"))).hexdigest()[:16]
 
 
 def _buy_path(path: Path) -> Path:

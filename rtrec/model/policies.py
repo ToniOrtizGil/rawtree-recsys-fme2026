@@ -27,6 +27,61 @@ from rtrec.validate import finalize
 DEFAULT_MODEL = Path(os.environ.get("RTREC_MODEL", "artifacts/ranker.txt"))
 
 
+def _cache_path(dump) -> Path | None:
+    """Only the real server caches (ops/run.sh sets RTREC_OFFLINE_CACHE=<dir>); tests and scripts never touch
+    it (pytest once overwrote the production cache with simulator data). One file per history+code key."""
+    d = os.environ.get("RTREC_OFFLINE_CACHE")
+    return Path(d) / f"offline_cache-{_cache_key(dump)[:16]}.pkl" if d else None
+
+
+def _cache_key(dump) -> str:
+    """Same history + same artefact/profile code -> same cache. Anything else rebuilds."""
+    import hashlib
+    h = hashlib.sha256()
+    for mod in ("artefacts.py", "features.py"):
+        h.update((Path(__file__).parent / mod).read_bytes())
+    h.update((Path(__file__).parents[1] / "live" / "profiles.py").read_bytes())
+    ev = dump.history_events
+    h.update(f"{len(ev)}|{len(dump.history_sessions)}|{ev['ts'].iloc[0] if len(ev) else ''}|"
+             f"{ev['ts'].iloc[-1] if len(ev) else ''}".encode())
+    return h.hexdigest()
+
+
+def _load_cache(state: State, dump) -> bool:
+    """Restart in seconds instead of ~3 min: offline artefacts + history profiles pickled after the first build."""
+    import pickle
+    try:
+        cache = _cache_path(dump)
+        if cache is None or not cache.exists():
+            return False
+        with cache.open("rb") as f:
+            key, offline, users = pickle.load(f)
+        if key != _cache_key(dump):
+            return False
+        state.offline.update(offline)
+        if not state.users:
+            state.users = users
+        return True
+    except Exception:  # noqa: BLE001  (corrupt / old cache: rebuild)
+        return False
+
+
+def _save_cache(state: State, dump) -> None:
+    import pickle
+    try:
+        cache = _cache_path(dump)
+        if cache is None:
+            return
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_suffix(".tmp")
+        with tmp.open("wb") as f:
+            pickle.dump((_cache_key(dump), {k: v for k, v in state.offline.items() if k != "ranker"}, state.users),
+                        f, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(cache)
+    except Exception:  # noqa: BLE001  (cache is an optimisation only)
+        pass
+
+
 def ensure_offline(state: State | None, dump=None, model_path: str | Path | None = None) -> None:
     """Fill state.offline once at start-up (never inside recommend): artefacts from the history dump
     if missing, and the ranker from `model_path` if it exists. Lets every policy be built as
@@ -34,16 +89,18 @@ def ensure_offline(state: State | None, dump=None, model_path: str | Path | None
     if state is None:
         return
     if dump is not None and "prod" not in state.offline:
-        from .artefacts import build_offline
-        state.offline.update(build_offline(dump.catalog, dump.history_sessions, dump.history_events))
+        if not _load_cache(state, dump):
+            from .artefacts import build_offline
+            state.offline.update(build_offline(dump.catalog, dump.history_sessions, dump.history_events))
+            if not state.users:  # warm shoppers: profiles from the history (cheap path, no trends)
+                from rtrec import live
+                from .util import to_epoch
+                prof = live.learner(state).profiles
+                for ev in dump.history_events.to_dict("records"):
+                    prof.add(ev, to_epoch(ev["ts"]), state)
+            _save_cache(state, dump)
         if not state.safe_list:
             state.safe_list = [p for p in state.offline["best_sellers"] if p in state.available][:200]
-        if not state.users:  # warm shoppers: profiles from the history (cheap path, no trends)
-            from rtrec import live
-            from .util import to_epoch
-            prof = live.learner(state).profiles
-            for ev in dump.history_events.to_dict("records"):
-                prof.add(ev, to_epoch(ev["ts"]), state)
     path = Path(model_path) if model_path else DEFAULT_MODEL
     if "ranker" not in state.offline and path.exists():
         state.offline["ranker"] = rk.load(path)

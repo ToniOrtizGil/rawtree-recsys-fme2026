@@ -133,6 +133,33 @@ def coviews(events: pd.DataFrame, top: int = COVIEW_TOP, max_per_session: int = 
     return out
 
 
+def view_to_buy(events: pd.DataFrame, top: int = COVIEW_TOP, max_views: int = 30) -> dict[str, list[tuple[str, float]]]:
+    """Session-KNN folded per item: in organic sessions that viewed A, what got bought (1.0) or carted (0.3)?
+
+    Summing over past sessions that share a viewed item with the current one is session-KNN with an
+    item-overlap similarity; it decomposes per viewed item, so we precompute it as an item graph and the
+    request only does a few dict lookups. Unlike `coview` it points at what people *bought* after
+    looking at A, which is the target we are scored on. Weighted 1/log2(1+#views) like coviews."""
+    if events.empty:
+        return {}
+    e = events[["session_id", "product_id", "event_type"]].astype(str)
+    v = e[e.event_type == "view"][["session_id", "product_id"]].drop_duplicates()
+    v = v.groupby("session_id", sort=False).head(max_views)
+    v = v.assign(w=1.0 / np.log2(1.0 + v.groupby("session_id")["product_id"].transform("size").to_numpy()))
+    b = e[e.event_type.isin(["purchase", "add_to_cart"])]
+    b = b.assign(wb=np.where(b.event_type == "purchase", 1.0, 0.3))
+    b = b.groupby(["session_id", "product_id"], sort=False)["wb"].max().reset_index()
+    pairs = v.merge(b, on="session_id", suffixes=("", "_b"))
+    pairs = pairs[pairs.product_id != pairs.product_id_b]
+    pairs = pairs.assign(w=pairs.w * pairs.wb)
+    agg = pairs.groupby(["product_id", "product_id_b"], sort=False)["w"].sum().reset_index()
+    agg = agg.sort_values(["product_id", "w"], ascending=[True, False]).groupby("product_id").head(top)
+    out: dict[str, list[tuple[str, float]]] = {}
+    for a, q, w in zip(agg.product_id.to_numpy(), agg.product_id_b.to_numpy(), agg.w.to_numpy()):
+        out.setdefault(a, []).append((q, float(w)))
+    return out
+
+
 def carousel_stats(sessions: pd.DataFrame, n_slots: int = 10) -> tuple[list[float], pd.DataFrame]:
     """Position bias and per-product COEC from history_sessions.
 
@@ -211,4 +238,4 @@ def build_offline(catalog: pd.DataFrame, sessions: pd.DataFrame, events: pd.Data
     tokens, idf = content_index(cat)
     return {"ctx_cat": ctx_cat, "ctx_price": ctx_price, "tokens": tokens, "idf": idf,
             "best_sellers": best_sellers, "prod": prod, "sub": subs, "sub_top": sub_top, "ctx_top": ctx_top,
-            "coview": coviews(ev), "slot_rate": slot_rate, "global_conv": float(g_conv), "history_days": days}
+            "coview": coviews(ev), "v2b": view_to_buy(ev), "slot_rate": slot_rate, "global_conv": float(g_conv), "history_days": days}

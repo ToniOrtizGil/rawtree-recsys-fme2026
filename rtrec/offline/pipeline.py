@@ -42,27 +42,58 @@ class Prepared:
     cuts: tuple[float, float, float, float]
     test_sessions: pd.DataFrame
     test_events: pd.DataFrame
+    val_mask: np.ndarray | None = None   # rows of the validation window (early stopping only)
+    w: np.ndarray | None = None          # inverse-propensity row weights (None = unweighted)
 
 
-def prepare(catalog: pd.DataFrame, sessions: pd.DataFrame, events: pd.DataFrame, a: float = 0.35, b: float = 0.85,
-            sample: float = 1.0, log=print) -> Prepared:
-    t0, ta, tb, t1 = time_cuts(sessions, a, b)
+def prepare(catalog: pd.DataFrame, sessions: pd.DataFrame, events: pd.DataFrame, a: float = 0.35, v: float = 0.70,
+            b: float = 0.80, sample: float = 1.0, ipw_clip: float = 0.0, log=print) -> Prepared:
+    """Chronological split of the history (time order, so nothing from the future leaks backwards):
+
+      train 70 %  = [0, a) offline artefacts (popularity, co-views, view->buy...) + [a, v) training rows
+      valid 10 %  = [v, b) rows used only for early stopping / model selection
+      test  20 %  = [b, 1] never touched until the final offline evaluation
+
+    Features of every row are computed with what was known at that moment (the feed replays events)."""
+    t0, ta, tb_, t1 = time_cuts(sessions, a, b)
+    tv = t0 + v * (t1 - t0)
     tic = time.time()
     s_a, e_a = window(sessions, t0, ta), window(events, t0 - 1e9, ta)
     state, feed = state_from_history(catalog, s_a, e_a)
     log(f"artefacts from {len(s_a)} sessions / {len(e_a)} events in {time.time() - tic:.1f}s")
-    X, y, c, g = build_rows(state, feed, sessions, events, ta, tb, sample=sample)
-    log(f"training rows {len(y)} (purchases {int(y.sum())}, clicks {int(c.sum())}) in {time.time() - tic:.1f}s")
-    return Prepared(state, feed, X, y, g, c, (t0, ta, tb, t1), window(sessions, tb, t1 + 1),
-                    window(events, tb, t1 + 1))
+    X1, y1, c1, g1, p1 = build_rows(state, feed, sessions, events, ta, tv, sample=sample, return_props=True)
+    X2, y2, c2, g2, p2 = (build_rows(state, feed, sessions, events, tv, tb_, sample=sample, seed=1, return_props=True)
+                          if tb_ > tv else (np.zeros((0, X1.shape[1]), np.float32), np.zeros(0), np.zeros(0),
+                                            np.zeros(0, int), np.zeros(0)))
+    off = int(g1.max()) + 1 if len(g1) else 0
+    X, y, c = np.vstack([X1, X2]), np.concatenate([y1, y2]), np.concatenate([c1, c2])
+    g = np.concatenate([g1, g2 + off])
+    val = np.concatenate([np.zeros(len(y1), bool), np.ones(len(y2), bool)])
+    log(f"train rows {len(y1)} (buys {int(y1.sum())}) · valid rows {len(y2)} (buys {int(y2.sum())}) "
+        f"in {time.time() - tic:.1f}s")
+    w = ipw_weights(np.concatenate([p1, p2]), ipw_clip) if ipw_clip > 0 else None
+    return Prepared(state, feed, X, y, g, c, (t0, ta, tb_, t1), window(sessions, tb_, t1 + 1),
+                    window(events, tb_, t1 + 1), val_mask=val, w=w)
 
 
-def fit(p: Prepared, val_frac: float = 0.15, rounds: int = 600, log=print):
+def ipw_weights(props: np.ndarray, clip: float) -> np.ndarray:
+    """Correct the old carousel's bias: an item it rarely showed counts more, w = min(1/propensity, clip),
+    normalised to mean 1. Clipping keeps the variance bounded (most propensities are tiny). Rows without a
+    logged propensity (our own practice-stream answers) get the mean weight."""
+    w = np.minimum(1.0 / np.clip(props, 1e-9, None), clip)
+    w[~np.isfinite(props) | (props <= 0)] = np.nan
+    w = np.where(np.isnan(w), np.nanmean(w) if np.isfinite(w).any() else 1.0, w)
+    return w / w.mean()
+
+
+def fit(p: Prepared, val_frac: float = 0.15, rounds: int = 600, fixed_rounds=None, log=print):
     """Train on the earlier part of the training window, early-stop on its last `val_frac` (by time)."""
-    n_imp = int(p.groups.max()) + 1 if len(p.groups) else 0
-    cut = int(n_imp * (1 - val_frac))
-    va = p.groups >= cut
-    model, metrics = rk.train(p.X, p.y, p.c, va, rounds=rounds)
+    if p.val_mask is not None:
+        va = p.val_mask
+    else:
+        n_imp = int(p.groups.max()) + 1 if len(p.groups) else 0
+        va = p.groups >= int(n_imp * (1 - val_frac))
+    model, metrics = rk.train(p.X, p.y, p.c, va, rounds=rounds, fixed_rounds=fixed_rounds, weight=p.w)
     metrics.update(train_rows=int((~va).sum()), val_rows=int(va.sum()))
     pv = model.predict(p.X[va]) if va.any() else np.array([])
     if va.any() and 0 < p.y[va].sum() < va.sum():
@@ -94,7 +125,7 @@ def offline_eval(p: Prepared, policies: list[Policy], booster=None, sim=None, ma
     lists = {pol.name: [] for pol in policies}
     q_new = {pol.name: [] for pol in policies}
     truth = {pol.name: [] for pol in policies}
-    q_logged, shown, props, purchased, clicked, cold = [], [], [], [], [], []
+    q_logged, shown, props, purchased, clicked, cold, newu = [], [], [], [], [], [], []
     j = 0
     slot_idx = F_INDEX["slot"]
     for row in ses.to_dict("records"):
@@ -109,6 +140,7 @@ def offline_eval(p: Prepared, policies: list[Policy], booster=None, sim=None, ma
         purchased.append(clean_id(row.get("purchased")))
         clicked.append(clean_id(row.get("clicked")))
         cold.append(state.is_cold(req))
+        newu.append(bool(req["is_new_user"]))
         if booster is not None:
             q_logged.append(rk.predict(booster, featurize(req, state, sh, slot=list(range(len(sh))), now=row["_t"])))
         for pol in policies:
@@ -136,6 +168,17 @@ def offline_eval(p: Prepared, policies: list[Policy], booster=None, sim=None, ma
             row.update(dm=r_emp["dm"], dr_emp=r_emp["dr"], dr_emp_ci=r_emp["dr_ci"], dr_cond=r_cond["dr"])
         if sim is not None:
             row["truth"] = 100 * float(np.mean(truth[name]))
+        # slices: new shoppers (not seen before this moment), cold (organisers' definition), warm
+        for sl, mask in (("new_user", newu), ("cold", cold), ("warm", [not x for x in cold])):
+            idx = [i for i, m in enumerate(mask) if m]
+            if not idx:
+                continue
+            sub = lambda xs: [xs[i] for i in idx]  # noqa: E731
+            rs = est.estimate(sub(lists[name]), sub(shown), sub(props), sub(purchased), None, None, marginals=None)
+            row[f"{sl}_n"] = len(idx)
+            row[f"{sl}_ips_cond"] = rs["ips"]
+            row[f"{sl}_ips_slot1"] = rs["ips_slot1"]
+            row[f"{sl}_hit@10_click"] = est.hit_rate(sub(lists[name]), sub(clicked))[0]
         out["policies"][name] = row
     return out
 
