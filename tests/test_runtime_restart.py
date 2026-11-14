@@ -65,7 +65,7 @@ def test_snapshot_restores_catalog_and_learnt_state(tmp_path):
     avail = srv.state.available
     srv2 = env.server(policy=BaselinePolicy(), state_dir=tmp_path)
     srv2.start()
-    assert srv2.state.live == {"trend": {"x": 1.0}}
+    assert srv2.state.live["trend"] == {"x": 1.0}
     # same catalogue view (modulo updates in the last instant)
     assert len(avail ^ srv2.state.available) <= 2
 

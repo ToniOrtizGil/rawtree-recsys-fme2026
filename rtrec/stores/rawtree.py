@@ -1,8 +1,8 @@
 """RawTreeStore: the Store protocol over api.rawtree.com.
 
-!!! UNTESTED LIVE: written from the documented API (docs/memory/03_rawtree_api_sql.md) while we had
-!!! no key and the host was blocked. Exercised only against our local HTTP emulator
-!!! (rtrec/stores/fake_http.py). Run `python ops/smoke_rawtree.py` first thing with a key.
+Written from the documented API before we had a key; first checked live on 14-nov 12:24 UTC
+(ops/smoke_rawtree.py: every reader and the scratch insert work on team_36; measured round trips
+~230-370 ms per call from the cloud container). Also exercised against rtrec/stores/fake_http.py.
 
 API used
   POST /v1/query                     {"sql": ..., "format": "JSON"}  -> {"data": [...], "hints": [...]}
@@ -110,7 +110,7 @@ _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
 class RawTreeStore:
     def __init__(self, team: str, api_key: str, base_url: str = "https://api.rawtree.com", *,
                  overlap_requests: float = 3.0, overlap_rows: float = 5.0, overlap_feedback: float = 30.0,
-                 read_timeout: float = 2.0, insert_timeout: float = 1.0, scratch_timeout: float = 2.0):
+                 read_timeout: float = 2.0, insert_timeout: float = 1.5, scratch_timeout: float = 2.0):
         if not _IDENT.match(team):
             raise ValueError(f"bad team id {team!r}")
         self.team = team
@@ -182,8 +182,9 @@ class RawTreeStore:
         try:
             return self.query(sql, timeout)
         except QueryError as e:
+            # (verified live 14-nov: an empty raw table answers "Empty list of columns in projection")
             if "UNKNOWN_IDENTIFIER" in e.body or "Unknown expression identifier" in e.body \
-                    or "UNKNOWN_TABLE" in e.body:
+                    or "UNKNOWN_TABLE" in e.body or "Empty list of columns" in e.body:
                 return []
             raise
 

@@ -25,17 +25,6 @@ class RealClock:
             time.sleep(dt)
 
 
-class OffsetClock(RealClock):
-    """Real-time clock that starts at a given epoch (A2's simulator lives on its own fixed calendar,
-    so a real-time FakeStore and the Server must share a clock that starts at sim.stream_start)."""
-
-    def __init__(self, start: float):
-        self._offset = float(start) - time.time()
-
-    def now(self) -> float:
-        return time.time() + self._offset
-
-
 class SimClock:
     """Manually advanced clock for deterministic tests. `sleep` advances time instantly."""
 

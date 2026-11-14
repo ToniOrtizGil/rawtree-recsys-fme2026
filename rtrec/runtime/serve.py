@@ -55,7 +55,7 @@ log = logging.getLogger("rtrec.serve")
 @dataclass
 class ServeConfig:
     poll_interval: float = 0.2          # shop.requests polling (organisers' baseline: 0.3 s)
-    request_pollers: int = 2            # staggered pollers: one stalled HTTP call never delays a request
+    request_pollers: int = 3            # staggered (every ~70 ms): live query RTT is ~250 ms, one slow call never delays a request
     catalog_interval: float = 0.25      # stock must be exact: one stock-out invalidates the whole answer
     events_interval: float = 1.0
     feedback_interval: float = 2.0
@@ -66,9 +66,10 @@ class ServeConfig:
     batch_budget_s: float = 0.15        # level-1 policy time per batch
     stale_s: float = 6.0                # skip requests already this old when first seen (our clock)
     give_up_s: float = 4.0              # writer drops rows this old (cannot be on time any more)
+    insert_hedge_s: float = 0.7         # send an identical copy if an insert is slower (live RTT ~0.3 s)
     request_lookback_s: float = 10.0    # on a cold start, look this far back for requests
     events_lookback_s: float = 600.0    # on a cold start, replay this much of shop.events to the hooks
-    hook_chunk: int = 2000
+    hook_chunk: int = 400               # A4 measured ~120 ms per 1k real events: keep each hook call short
     role: str = "primary"
     instance: str = field(default_factory=default_instance)
     takeover_after_s: float = 2.5
@@ -86,7 +87,8 @@ class Server:
         # FakeStore carries its own (simulated or offset) clock: the loop must live on the same one
         self.clock = clock or getattr(store, "clock", None) or RealClock()
         self.state = state or State()
-        self.hooks = HookSet(hooks)
+        # hooks=None -> A4's live learning (LiveHook) by default; hooks=[] -> none
+        self.hooks = HookSet(default_hooks() if hooks is None else hooks)
         self.metrics = Metrics()
         self.runner = PolicyRunner(policy, budget_s=self.cfg.batch_budget_s)
         self.policy_factory = policy_factory
@@ -95,7 +97,8 @@ class Server:
         sd = Path(self.cfg.state_dir) if self.cfg.state_dir else None
         self.state_dir = sd
         self.journal = Journal(sd)
-        self.writer = Writer(store, self.clock, self.journal, self.metrics, give_up_s=self.cfg.give_up_s)
+        self.writer = Writer(store, self.clock, self.journal, self.metrics, give_up_s=self.cfg.give_up_s,
+                             hedge_after_s=self.cfg.insert_hedge_s)
         self.heartbeat = Heartbeat(store, self.clock, role=self.cfg.role, instance=self.cfg.instance,
                                    takeover_after_s=self.cfg.takeover_after_s,
                                    model_version=lambda: self.runner.name)
@@ -104,6 +107,7 @@ class Server:
         self.cur_updates = Cursor(update_key, start=0.0, window=120)
         self.cur_events = Cursor(event_key, start=now - self.cfg.events_lookback_s, window=60)
         self.cur_feedback = Cursor(request_key, start=now - 60, window=600)
+        self._policy_ready: queue.Queue = queue.Queue()     # (policy, scratch State) from the loader thread
         self._shadow: list[tuple[Submission, float]] = []   # standby: answers computed but not written
         self._req_q: queue.Queue = queue.Queue()
         self._upd_q: queue.Queue = queue.Queue()            # ("catalog"|"events"|"feedback", rows)
@@ -161,12 +165,65 @@ class Server:
                 delay = min(delay * 2, 2.0)
 
     def _load_policy(self) -> None:
+        """Background thread. A3's factories take (state, dump) and fill state.offline (artefacts from the
+        history) and warm profiles: that can take a while, so it runs on a scratch State and the serving
+        thread merges the result (_adopt_policy) -- the shared State keeps a single writer."""
+        t0 = time.perf_counter()
         try:
-            p = self.policy_factory()
-            self.runner.set_policy(p)
-            log.info("policy %s loaded", getattr(p, "name", "?"))
+            st = self.state
+            scratch = State(catalog=dict(st.catalog), available=st.available, new_products=st.new_products,
+                            safe_list=list(st.safe_list))
+            self._seed_events = None
+            if _wants_args(self.policy_factory):
+                dump = self._history_dump()
+                self._seed_events = getattr(dump, "history_events", None)
+                p = self.policy_factory(scratch, dump)
+            else:
+                p = self.policy_factory()
+            self._policy_ready.put((p, scratch, self._seed_events))
+            log.info("policy %s built in %.1f s", getattr(p, "name", "?"), time.perf_counter() - t0)
         except Exception:
             log.exception("policy factory failed; serving with the fallback policy")
+
+    def _adopt_policy(self) -> None:
+        """Serving thread: install a policy built in the background, with what it computed."""
+        try:
+            p, scratch, seed_events = self._policy_ready.get_nowait()
+        except queue.Empty:
+            return
+        if seed_events is not None and not self.state.live.get("_seeded_history"):
+            t0 = time.perf_counter()
+            try:   # A4: long-run subcategory/brand baselines for the trend lifts (once; kept in snapshots)
+                from rtrec import live
+                live.seed_history(self.state, seed_events)
+                self.state.live["_seeded_history"] = True
+                log.info("live.seed_history in %.2f s", time.perf_counter() - t0)
+            except Exception:  # noqa: BLE001
+                log.exception("seed_history failed (continuing without it)")
+        self.state.offline.update(scratch.offline)
+        if scratch.users and not self.state.users:
+            self.state.users = scratch.users
+        if scratch.safe_list and scratch.safe_list != self.state.safe_list:
+            self.state.safe_list = scratch.safe_list
+        self.runner.set_policy(p)
+        log.info("policy %s live", getattr(p, "name", "?"))
+
+    def _history_dump(self):
+        """catalog / history_sessions / history_events for policy factories: the simulator's own history
+        on a FakeStore, else the Parquet dump in $RTREC_DATA (scripts/download_history.py); None if absent."""
+        sim = getattr(self.store, "sim", None)
+        if sim is not None:
+            days = getattr(getattr(sim, "cfg", None), "history_days", 60)
+            return sim.history(days=days)
+        d = Path(os.environ.get("RTREC_DATA", "data"))
+        if (d / "catalog.parquet").exists():
+            from types import SimpleNamespace
+
+            from rtrec.data.load import load_history
+            h = load_history(d)
+            return SimpleNamespace(catalog=h.catalog, history_sessions=h.sessions, history_events=h.events)
+        log.warning("no history dump found (%s): policy built without offline artefacts", d)
+        return None
 
     def _backfill_catalog_updates(self) -> None:
         while True:
@@ -234,6 +291,11 @@ class Server:
         out: list[tuple[Submission, float]] = []
         for r in fresh:
             items, mv = level1.get(r["request_id"]), self.runner.name
+            if items is not None and hasattr(self.runner.policy, "version_for"):
+                try:   # A4's A/B router names the arm that answered
+                    mv = str(self.runner.policy.version_for(r))
+                except Exception:  # noqa: BLE001
+                    pass
             if items is None:
                 mv = self.fallback.name
                 try:
@@ -341,7 +403,7 @@ class Server:
         if self.heartbeat.active and not was:
             self._became_active()
         try:
-            self.heartbeat.beat({"cursor": self.cur_requests.position, "served": self.metrics.c["submitted"]})
+            self.heartbeat.beat()
         except Exception as e:  # noqa: BLE001
             self.metrics.inc("heartbeat_write_errors")
             log.debug("heartbeat write failed: %s", e)
@@ -433,6 +495,7 @@ class Server:
             self._guarded(lambda: self.apply_updates("feedback", self.fetch_feedback()), "feedback")
         if self._is_due("heartbeat", now, self.cfg.heartbeat_interval):
             self.do_heartbeat()
+        self._adopt_policy()
         out: list[Submission] = []
         reqs = self._guarded(self.fetch_requests, "requests") or []
         if reqs:
@@ -501,6 +564,7 @@ class Server:
                     reqs = self._req_q.get(timeout=0.02)
                 except queue.Empty:
                     reqs = None
+                self._adopt_policy()
                 if reqs:
                     while True:   # merge everything already waiting into one batch
                         try:
@@ -535,7 +599,29 @@ class Server:
         self.journal.close()
 
 
-# ====================================================================== CLI
+# ====================================================================== helpers / CLI
+def default_hooks() -> list:
+    """A4's live learning, plugged in unless the caller passes its own hooks (RTREC_HOOKS=none disables)."""
+    if os.environ.get("RTREC_HOOKS", "") == "none":
+        return []
+    try:
+        from rtrec.live.hook import LiveHook
+    except ImportError:
+        log.warning("rtrec.live not available: serving without live learning")
+        return []
+    return [LiveHook()]
+
+
+def _wants_args(factory) -> bool:
+    """A3's policies are built as Policy(state, dump); older factories take nothing."""
+    import inspect
+    try:
+        params = [p for p in inspect.signature(factory).parameters.values()
+                  if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    except (TypeError, ValueError):
+        return False
+    return len(params) >= 2
+
 def _load_obj(spec: str):
     """'pkg.module:attr' -> the attribute (a class, a factory function or an instance)."""
     mod, _, attr = spec.partition(":")
@@ -565,7 +651,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--policy", default=os.environ.get("RTREC_POLICY", ""),
                     help="module:factory returning a Policy (loaded in the background); default: built-in fallback")
     ap.add_argument("--hooks", default=os.environ.get("RTREC_HOOKS", ""),
-                    help="comma-separated module:factory returning hook objects (A4 live updaters)")
+                    help="comma-separated module:Class|factory for hook objects; default A4's LiveHook; 'none'")
+    ap.add_argument("--explore", type=float, default=float(os.environ.get("RTREC_EXPLORE", "0")),
+                    help="practice round: share of slots 4-10 explored (e.g. 0.2), propensities logged")
+    ap.add_argument("--served-log", action="store_true", default=os.environ.get("RTREC_SERVED_LOG") == "1",
+                    help="write one kind=served row per answer to team.scratch (training data)")
+    ap.add_argument("--dashboard", type=int, default=int(os.environ.get("RTREC_DASHBOARD", "0")),
+                    help="port: also run A5's dashboard in this process (needed with the in-memory fake store)")
     ap.add_argument("--role", default=os.environ.get("RTREC_ROLE", "primary"), choices=["primary", "standby"])
     ap.add_argument("--state-dir", default=os.environ.get("RTREC_STATE_DIR", "artifacts/runtime"))
     ap.add_argument("--duration", type=float, default=None, help="seconds to run (default: forever)")
@@ -577,9 +669,26 @@ def main(argv: list[str] | None = None) -> int:
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     store = build_store(args.store, args)
     factory = as_factory(_load_obj(args.policy)) if args.policy else None
-    hooks = [as_factory(_load_obj(spec.strip()))() for spec in filter(None, args.hooks.split(","))]
+    if args.hooks in ("", None):
+        hooks = None                       # Server default: LiveHook
+    elif args.hooks == "none":
+        hooks = []
+    else:
+        hooks = [as_factory(_load_obj(spec.strip()))() for spec in args.hooks.split(",") if spec.strip()]
+    if factory is not None and args.explore > 0:
+        from .explore import Explore
+        base, eps = factory, args.explore
+        factory = (lambda st, dump: Explore(base(st, dump), eps)) if _wants_args(base) \
+            else (lambda: Explore(base(), eps))
     cfg = ServeConfig(role=args.role, state_dir=args.state_dir)
     server = Server(store, policy_factory=factory, hooks=hooks, config=cfg)
+    if args.served_log:
+        from .explore import ServedLog
+        server.hooks.add(ServedLog(store, get_policy=lambda: server.runner.policy))
+    if args.dashboard:
+        from dashboard.server import start_in_background
+        start_in_background(store, port=args.dashboard)
+        log.info("dashboard on http://127.0.0.1:%d", args.dashboard)
     signal.signal(signal.SIGTERM, lambda *_: server._stop.set())
     server.run(duration=args.duration)
     if hasattr(store, "report"):

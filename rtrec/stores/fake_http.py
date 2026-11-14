@@ -113,8 +113,10 @@ class Emulator:
                 self.wfile.write(body)
 
             def do_GET(self):
-                if self.path.startswith("/report"):
-                    return self._send(200, emu.store.report())
+                url = urlparse(self.path)
+                if url.path == "/report":
+                    q = {k: float(v[0]) for k, v in parse_qs(url.query).items() if k in ("since", "until")}
+                    return self._send(200, emu.store.report(**q), )
                 self._send(404, {"error": "not found"})
 
             def do_POST(self):
@@ -145,21 +147,47 @@ class Emulator:
         return H
 
     def serve(self, host: str = "127.0.0.1", port: int = 0) -> ThreadingHTTPServer:
-        srv = ThreadingHTTPServer((host, port), self.handler())
+        srv = _QuietServer((host, port), self.handler())
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, name="fake-rawtree", daemon=True).start()
         return srv
 
 
+class _QuietServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # clients that time out and hang up (our own short timeouts) are expected, not errors
+        import sys
+        if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            super().handle_error(request, client_address)
+
+
+FAULT_PROFILES = {
+    "none": {},
+    "latency": dict(latency=0.08, latency_jitter=0.12, spike_prob=0.02, spike_s=1.0),
+    "flaky": dict(latency=0.08, latency_jitter=0.12, spike_prob=0.02, spike_s=1.0, read_error=0.05,
+                  insert_error=0.05, ambiguous_insert=0.02, rate_limit=0.01),
+}
+
+
 def main() -> None:
-    from . import make_simulator
+    import os
+
+    from rtrec.runtime.clock import RealClock
+
+    from . import make_simulator, warm_up
+    from .fake import Faults
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--rate-multiplier", type=float, default=1.0)
+    ap.add_argument("--sim", default=os.environ.get("RTREC_SIM", "shop"), choices=["shop", "stub"])
+    ap.add_argument("--faults", default="none", choices=sorted(FAULT_PROFILES))
     ap.add_argument("--api-key", default=None)
     a = ap.parse_args()
-    store = FakeStore(make_simulator(seed=a.seed, rate_multiplier=a.rate_multiplier))
+    os.environ["RTREC_SIM"] = a.sim
+    sim = make_simulator(seed=a.seed, rate_multiplier=a.rate_multiplier)
+    warm_up(sim)
+    store = FakeStore(sim, RealClock(), faults=Faults(seed=a.seed, **FAULT_PROFILES[a.faults]))
     srv = Emulator(store, a.api_key).serve(port=a.port)
     print(f"fake RawTree on http://127.0.0.1:{srv.server_address[1]}", flush=True)
     try:
