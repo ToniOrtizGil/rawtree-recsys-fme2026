@@ -211,3 +211,21 @@ def test_server_endpoints():
             urllib.request.urlopen(base + "/nope")
     finally:
         srv.shutdown()
+
+
+# ------------------------------------------------------------------ shapes seen on live RawTree (team_36, Sat 13:25)
+def test_live_rawtree_shapes():
+    # DateTime64(9) serialised without zone and with 9 fractional digits; null latency on missing answers
+    assert metrics.to_epoch("2026-11-14 09:00:00.014000000") == pytest.approx(1_794_646_800.014)
+    assert metrics.to_epoch("2026-11-14 12:15:21.240") == pytest.approx(1_794_658_521.24)
+    r = FB.from_row({"request_id": "r_1", "ts": "2026-11-14 12:15:21.240", "shown": ["p"] * 10,
+                     "served_by": "fallback", "fallback_reason": "missing", "latency_ms": None,
+                     "clicked": "", "purchased": "", "revenue_eur": 0.0})
+    assert not r.ok and r.latency_ms == 0.0 and metrics.latency([r])["n"] == 0
+    # the organisers counted a 3297 ms answer as on time: the reason column, not latency, decides validity
+    assert fb(1, lat=3297.0).ok
+
+
+def test_warming_up_suppresses_false_alarms():
+    s = _snap(polls=0, ages={"request": None, "feedback": None, "heartbeat": None})
+    assert codes(s) == ["WARMING_UP"] and alerts.overall(alerts.evaluate(s)) == "ok"

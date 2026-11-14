@@ -44,6 +44,9 @@ def _fmt(x, unit="") -> str:
 
 
 def evaluate(s: dict) -> list[Alert]:
+    if s.get("polls", 1) == 0:
+        return [Alert("info", "WARMING_UP", "Dashboard is reading the last hours of data",
+                      "First read takes ~10 s on live RawTree. Numbers below are not meaningful yet.", "r0-triage")]
     out: list[Alert] = []
     li, ages = s["light"], s["ages"]
     n, pct = li["n"], li["ok_pct"]

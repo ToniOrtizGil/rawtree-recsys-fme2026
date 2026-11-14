@@ -200,7 +200,7 @@ class DemoStore:
         self._pending.append((due, {
             "request_id": rid, "ts": to_iso(due), "shown": shown,
             "served_by": "fallback" if reason else "team", "fallback_reason": reason,
-            "latency_ms": 0 if reason == "missing" else round(latency, 1),
+            "latency_ms": None if reason == "missing" else round(latency, 1),   # null on live RawTree
             "clicked": clicked, "purchased": purchased,
             "revenue_eur": self.products[purchased]["price_eur"] if purchased else 0}))
 

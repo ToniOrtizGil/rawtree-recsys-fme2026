@@ -35,13 +35,13 @@ def world():
         db, name = table.split(".")
         sess.query(f"CREATE DATABASE IF NOT EXISTS {db}")
         cols = sorted({k for r in rows for k in r})
-        extra = ", __raw_data String" if table == "shop.requests" else ""
+        extra = ", __raw_data JSON" if table == "shop.requests" else ""     # JSON-typed on live RawTree
         sess.query(f"CREATE TABLE {table} ({', '.join(f'`{c}` Dynamic' for c in cols)}{extra}) ENGINE = Memory")
         body = []
         for r in rows:
             row = dict(r)
             if table == "shop.requests":
-                row["__raw_data"] = json.dumps(r)
+                row["__raw_data"] = r
             body.append(json.dumps(row))
         for i in range(0, len(body), 2000):
             sess.query(f"INSERT INTO {table} FORMAT JSONEachRow " + "\n".join(body[i:i + 2000]))
