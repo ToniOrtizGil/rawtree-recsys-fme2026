@@ -73,6 +73,18 @@ def load_history(data_dir: str | Path = "data") -> History:
                    _read_dir(d / "history_events"), src)
 
 
+def load_live(data_dir: str | Path = "data") -> dict[str, pd.DataFrame]:
+    """data/live/<table>/*.parquet (written by `download_history.py --live` or `sim.dump --live-minutes`)."""
+    d = Path(data_dir) / "live"
+    out = {}
+    for t in ("events", "catalog_updates", "requests", "feedback"):
+        if (d / t).exists():
+            df = _read_dir(d / t)
+            if len(df):
+                out[t] = df
+    return out
+
+
 def from_simulator(sim, days: int | None = None) -> History:
     days = days or sim.cfg.history_days
     h = sim.history(days)

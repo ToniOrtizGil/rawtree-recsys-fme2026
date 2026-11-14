@@ -91,3 +91,4 @@ def test_position_fit_recovers_hidden_curve():
     true = np.asarray(sim.cfg.hidden.examine)
     true = true / true[0]
     assert np.abs(e.to_numpy()[:5] - true[:5]).max() < 0.15
+

@@ -4,6 +4,7 @@
     data/history_sessions/<YYYY-MM-DD>.parquet
     data/history_events/<YYYY-MM-DD>.parquet
     data/SOURCE.json
+    data/live/{events,catalog_updates,requests,feedback}/<YYYY-MM-DD>.parquet   (with --live)
 
     TEAM_ID=team_NN RAWTREE_API_KEY=rt_... python scripts/download_history.py --out data
 
@@ -34,6 +35,7 @@ import pandas as pd
 
 API = "https://api.rawtree.com"
 TABLES = ("history_sessions", "history_events")
+LIVE_TABLES = ("events", "catalog_updates", "requests")   # --live: shop.* tables of the event, into data/live/
 
 COLUMNS = {   # fallback when __raw_data is not readable: explicit casts (every column is Dynamic)
     "catalog": "product_id::String AS product_id, category::String AS category, subcategory::String AS subcategory, "
@@ -107,8 +109,8 @@ def _fmt(t: datetime) -> str:
     return t.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def fetch_window(query, table: str, t0: datetime, t1: datetime, use_raw: bool) -> list[dict]:
-    sql = (f"SELECT {_select(table, use_raw)} FROM shop.{table} "
+def fetch_window(query, table: str, t0: datetime, t1: datetime, use_raw: bool, db: str = "shop") -> list[dict]:
+    sql = (f"SELECT {_select(table, use_raw)} FROM {db}.{table} "
            f"WHERE ts::DateTime64(3) >= toDateTime64('{_fmt(t0)}', 3, 'UTC') "
            f"AND ts::DateTime64(3) < toDateTime64('{_fmt(t1)}', 3, 'UTC')")
     try:
@@ -117,14 +119,38 @@ def fetch_window(query, table: str, t0: datetime, t1: datetime, use_raw: bool) -
         # result too big (400/413) or too slow (408): split the window in halves, down to 15 minutes
         if e.status in (400, 408, 413) and (t1 - t0) > timedelta(minutes=15):
             mid = t0 + (t1 - t0) / 2
-            return fetch_window(query, table, t0, mid, use_raw) + fetch_window(query, table, mid, t1, use_raw)
+            return fetch_window(query, table, t0, mid, use_raw, db) + fetch_window(query, table, mid, t1, use_raw, db)
         raise
 
 
-def ts_range(query, table: str) -> tuple[datetime, datetime]:
-    r = query(f"SELECT toString(min(ts::DateTime64(3))) AS lo, toString(max(ts::DateTime64(3))) AS hi FROM shop.{table}")[0]
+def ts_range(query, table: str, db: str = "shop") -> tuple[datetime, datetime]:
+    r = query(f"SELECT toString(min(ts::DateTime64(3))) AS lo, toString(max(ts::DateTime64(3))) AS hi FROM {db}.{table}")[0]
     parse = lambda s: datetime.fromisoformat(str(s).replace("Z", "")).replace(tzinfo=timezone.utc)
     return parse(r["lo"]), parse(r["hi"])
+
+
+def download_table(query, out: Path, table: str, use_raw: bool, db: str = "shop", log=print,
+                   refresh_last: bool = False) -> int:
+    """Day files for one table. With refresh_last the newest (still growing) day is re-downloaded."""
+    d = out / table
+    d.mkdir(parents=True, exist_ok=True)
+    lo, hi = ts_range(query, table, db)
+    day = lo.replace(hour=0, minute=0, second=0, microsecond=0)
+    n = 0
+    while day <= hi:
+        f = d / f"{day:%Y-%m-%d}.parquet"
+        last = day + timedelta(days=1) > hi
+        if not f.exists() or (refresh_last and last):
+            rows = fetch_window(query, table, day, day + timedelta(days=1), use_raw, db)
+            if table == "feedback":
+                rows = [r for r in rows if r.get("request_id") != "__init__"]
+            tmp = f.with_suffix(".tmp")
+            pd.DataFrame(rows).to_parquet(tmp, index=False)
+            tmp.rename(f)            # atomic: a half-written day is never mistaken for a done one
+            log(f"{db}.{table} {day:%Y-%m-%d}: {len(rows)} rows")
+            n += len(rows)
+        day += timedelta(days=1)
+    return n
 
 
 def download(query, out: Path, use_raw: bool = True, log=print) -> dict:
@@ -136,24 +162,18 @@ def download(query, out: Path, use_raw: bool = True, log=print) -> dict:
         pd.DataFrame(rows).to_parquet(cat, index=False)
         log(f"catalog: {len(rows)} products")
     for table in TABLES:
-        d = out / table
-        d.mkdir(exist_ok=True)
-        lo, hi = ts_range(query, table)
-        day = lo.replace(hour=0, minute=0, second=0, microsecond=0)
-        n = 0
-        while day <= hi:
-            f = d / f"{day:%Y-%m-%d}.parquet"
-            if not f.exists():
-                rows = fetch_window(query, table, day, day + timedelta(days=1), use_raw)
-                tmp = f.with_suffix(".tmp")
-                pd.DataFrame(rows).to_parquet(tmp, index=False)
-                tmp.rename(f)            # atomic: a half-written day is never mistaken for a done one
-                log(f"{table} {day:%Y-%m-%d}: {len(rows)} rows")
-                n += len(rows)
-            day += timedelta(days=1)
-        stats[table] = n
+        stats[table] = download_table(query, out, table, use_raw, log=log)
     (out / "SOURCE.json").write_text(json.dumps(
         {"source": "rawtree", "downloaded_at": datetime.now(timezone.utc).isoformat(), "raw_data": use_raw}, indent=2))
+    return stats
+
+
+def download_live(query, out: Path, team: str | None, use_raw: bool = True, log=print) -> dict:
+    """Snapshot of the live tables (for forensics H6/H7/H10/H11), re-fetching the current day."""
+    live = out / "live"
+    stats = {t: download_table(query, live, t, use_raw, log=log, refresh_last=True) for t in LIVE_TABLES}
+    if team:
+        stats["feedback"] = download_table(query, live, "feedback", use_raw, db=team, log=log, refresh_last=True)
     return stats
 
 
@@ -162,12 +182,17 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--out", default="data")
     ap.add_argument("--columns", action="store_true", help="explicit casted columns instead of __raw_data")
     ap.add_argument("--base-url", default=API)
+    ap.add_argument("--live", action="store_true", help="also snapshot shop.events/catalog_updates/requests and "
+                                                         "<TEAM_ID>.feedback into <out>/live/")
     a = ap.parse_args(argv)
     load_env()
     key = os.environ.get("RAWTREE_API_KEY")
     if not key:
         sys.exit("RAWTREE_API_KEY is not set (put it in .env, never commit it)")
-    stats = download(http_query(key, a.base_url), Path(a.out), use_raw=not a.columns)
+    q = http_query(key, a.base_url)
+    stats = download(q, Path(a.out), use_raw=not a.columns)
+    if a.live:
+        stats.update(download_live(q, Path(a.out), os.environ.get("TEAM_ID"), use_raw=not a.columns))
     print("done:", stats)
 
 
