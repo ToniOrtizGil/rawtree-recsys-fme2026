@@ -123,8 +123,10 @@ def test_hooks_from_threads_while_reading():
     for t in ts:
         t.start()
     while any(t.is_alive() for t in ts):
+        avail = s.available                     # finalize works on one snapshot; check against it
         out = finalize(list(s.live.get("trend_top") or []) + [p for _, p in (s.users.get("u1").views if "u1" in s.users else [])], s)
-        assert is_valid(out, s)
+        assert len(out) == 10 and len(set(out)) == 10
+        assert all(p in avail or p in s.available for p in out)
     for t in ts:
         t.join()
     assert not errs
