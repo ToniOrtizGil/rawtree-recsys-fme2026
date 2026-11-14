@@ -3,7 +3,7 @@
     GET /                  the page (dashboard/static/index.html)
     GET /api/snapshot      all metrics + alerts as JSON   (?window=<minutes> for the conversion tables)
     GET /api/health        one line; HTTP 503 when an alert is critical (usable by any uptime monitor)
-    GET /runbook           ops/RUNBOOK.md as plain text (alert links point into it)
+    GET /runbook           ops/RUNBOOK.md (plain text in a page whose section anchors the alert links use)
 
 Binds to 127.0.0.1 by default: the page shows our team's data, do not expose it. A poller thread reads the
 store every `poll_s`; page requests only read the in-memory snapshot, so many viewers cost nothing.
@@ -11,7 +11,9 @@ The serving runtime can also embed it in-process with start_in_background(store)
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +34,16 @@ def full_snapshot(col: Collector, window_min: float = 60) -> dict:
     snap["status"] = alerts.overall(al)
     snap["summary"] = alerts.one_line(snap, al)
     return snap
+
+
+def runbook_page() -> str:
+    """The runbook as escaped text, keeping only its `<a id="...">` anchors live (no markdown renderer)."""
+    text = RUNBOOK.read_text(encoding="utf-8") if RUNBOOK.exists() else "ops/RUNBOOK.md not found"
+    body = re.sub(r'&lt;a id=&quot;([\w-]+)&quot;&gt;&lt;/a&gt;', r'<a id="\1"></a>', html.escape(text))
+    return ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+            "<title>Runbook</title><style>body{margin:0;padding:16px;font:14px/1.5 ui-monospace,monospace;"
+            "background:#fcfcfb;color:#0b0b0b}@media(prefers-color-scheme:dark){body{background:#1a1a19;"
+            "color:#f0efec}}pre{white-space:pre-wrap;max-width:110ch}</style><pre>" + body + "</pre>")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -63,8 +75,7 @@ class _Handler(BaseHTTPRequestHandler):
                 code = 503 if snap["status"] == "critical" else 200
                 self._send(code, (snap["summary"] + "\n").encode(), "text/plain; charset=utf-8")
             elif url.path == "/runbook":
-                text = RUNBOOK.read_bytes() if RUNBOOK.exists() else b"ops/RUNBOOK.md not found"
-                self._send(200, text, "text/plain; charset=utf-8")
+                self._send(200, runbook_page().encode(), "text/html; charset=utf-8")
             else:
                 self._send(404, b"not found", "text/plain")
         except Exception as e:  # noqa: BLE001 - never kill the server thread

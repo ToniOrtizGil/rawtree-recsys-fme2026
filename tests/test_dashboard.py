@@ -204,7 +204,9 @@ def test_server_endpoints():
         except urllib.error.HTTPError as e:   # 503 when critical
             health = e.read().decode()
         assert "light=" in health
-        assert urllib.request.urlopen(base + "/runbook").status == 200
+        rb = urllib.request.urlopen(base + "/runbook").read().decode()
+        for anchor in {v[1] for v in alerts.CAUSE.values()} | {"r0-triage", "r4-machine", "r5-stalled"}:
+            assert f'<a id="{anchor}"></a>' in rb             # every alert link lands on a section
         with pytest.raises(urllib.error.HTTPError):
             urllib.request.urlopen(base + "/nope")
     finally:
