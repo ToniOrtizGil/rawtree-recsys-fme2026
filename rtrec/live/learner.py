@@ -34,6 +34,7 @@ class LiveLearner:
     feedback: object | None = None          # FeedbackLearner, set in __post_init__ (avoids import cycle)
     seen_events: RecentKeys = field(default_factory=lambda: RecentKeys(500_000))
     requests: OrderedDict = field(default_factory=OrderedDict)   # request_id -> ReqInfo (bounded)
+    versions: dict = field(default_factory=dict)                  # request_id -> model_version served
     max_requests: int = 100_000
     prune_every_s: float = 600.0
     _last_prune: float = 0.0

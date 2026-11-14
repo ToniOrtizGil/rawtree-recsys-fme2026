@@ -100,7 +100,7 @@ class FeedbackLearner:
             if info is not None and info.user_id and learner is not None:
                 learner.profiles.add_carousel(info.user_id, t, clicked, bought, state)
             if ab is not None:
-                ab.update(rid, fb, info)
+                ab.update(rid, fb, info, learner.versions.get(rid) if learner is not None else None)
         self._since_pub += n
         if n and self._since_pub >= self.publish_every:
             self.publish(state)

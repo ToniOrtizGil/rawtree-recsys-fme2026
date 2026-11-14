@@ -205,3 +205,33 @@ def test_ab_split_report_and_promotion():
     s.available = frozenset(["p1"])
     assert router.version_for({"request_id": "r5"}) == arms[5]
     assert is_valid(router.recommend({"request_id": "r5", "recent_views": []}, s) or ["p1"], s, n=1)
+
+
+def test_runtime_hook_adapter_and_chunk_latency():
+    import time
+    from rtrec.live.hooks import LiveHooks
+    s = State()
+    for i in range(5000):
+        s.catalog[f"p{i}"] = {"product_id": f"p{i}", "category": "c", "subcategory": f"s{i % 90}", "brand": "b",
+                              "price_eur": 3.0, "description": "", "created_at": "", "is_active": True}
+    h = LiveHooks()
+    h.on_start(s)
+    assert len(s.available) == 5000
+    rng = random.Random(0)
+    evs = [{"ts": iso(T0 + i * 0.02), "event_type": "view", "user_id": f"u{rng.randrange(9000)}",
+            "session_id": f"x{rng.randrange(9000)}", "product_id": f"p{rng.randrange(5000)}", "price_eur": 3.0,
+            "device": "web", "region": "R"} for i in range(2000)]
+    t0 = time.perf_counter()
+    h.on_events(evs, s)
+    h.on_tick(s, T0 + 40)
+    assert (time.perf_counter() - t0) < 0.2       # A1 budget is ~50 ms per call on a normal chunk
+    req = {"request_id": "r1", "ts": iso(T0 + 41), "user_id": "u1", "is_new_user": True,
+           "context": {"device": "web", "region": "R", "page": "home"}, "recent_views": []}
+    install(s, ABTest([("a", 1), ("b", 1)]))
+    h.on_served([(req, ["p1"] * 10, "b")], s)
+    h.on_feedback([{"request_id": "r1", "ts": iso(T0 + 45), "shown": ["p1"], "served_by": "team",
+                    "fallback_reason": "", "latency_ms": 700, "clicked": "p1", "purchased": "p1",
+                    "revenue_eur": 3}], s)
+    live.learner(s).flush(s)
+    assert s.live["ab_report"]["arms"]["b"]["n"] == 1 and s.live["ab_report"]["arms"]["b"]["cold_n"] == 1
+    assert s.users["u1"].purchases[-1][1] == "p1"

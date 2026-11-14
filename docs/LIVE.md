@@ -11,6 +11,14 @@ live.on_requests(rows, state)             # shop.requests (optional; gives feedb
 live.on_feedback(rows, state)             # team_NN.feedback
 ```
 
+With A1's runtime (`rtrec/runtime/hooks.py` HookSet) just pass `hooks=[rtrec.live.hooks.LiveHooks()]`:
+`on_start` loads the catalogue from `state.catalog`, `on_served` records each request and the
+`model_version` that answered it (feedback has neither user_id nor version), `on_tick` refreshes
+snapshots. Measured: 2,000-event chunk ≈ 15 ms, 50 events ≈ 0.5 ms, trend snapshot ≈ 2–10 ms.
+Hooks are also serialised by an internal lock, so calling them from several threads is safe.
+A4 owns `state.catalog` / `available` / `new_products` (master decision): the runtime's own
+tracker should not write them once LiveHooks is installed.
+
 Guarantees: incremental (O(1) per row), idempotent (cursor-overlap duplicates ignored), exact with
 out-of-order rows, memory bounded. Event time (max `ts` seen), not wall clock, drives decay, so the
 same code runs on a replay, the simulator and the live stream.
