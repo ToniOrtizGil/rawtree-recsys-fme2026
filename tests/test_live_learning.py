@@ -209,14 +209,23 @@ def test_ab_split_report_and_promotion():
 
 def test_runtime_hook_adapter_and_chunk_latency():
     import time
-    from rtrec.live.hooks import LiveHooks
+    from rtrec.live.hook import LiveHook
+    from rtrec.runtime.catalog import CatalogTracker as A1Tracker
     s = State()
-    for i in range(5000):
-        s.catalog[f"p{i}"] = {"product_id": f"p{i}", "category": "c", "subcategory": f"s{i % 90}", "brand": "b",
-                              "price_eur": 3.0, "description": "", "created_at": "", "is_active": True}
-    h = LiveHooks()
+    a1 = A1Tracker()                              # the runtime owns the contract fields
+    a1.load([{"product_id": f"p{i}", "category": "c", "subcategory": f"s{i % 90}", "brand": "b",
+              "price_eur": 3.0, "description": "", "created_at": "", "is_active": True} for i in range(5000)])
+    a1.publish(s)
+    h = LiveHook()
     h.on_start(s)
     assert len(s.available) == 5000
+    upd = {**s.catalog["p7"], "price_eur": 2.0, "ts": iso(T0 + 1), "change": "price_change"}
+    a1.apply([upd])
+    a1.publish(s)
+    before = s.available
+    h.on_catalog_updates([upd], s)
+    assert s.available is before                  # LiveHook never writes contract fields
+    assert s.live["price"]["p7"].last_change_ratio == 2.0 / 3.0
     rng = random.Random(0)
     evs = [{"ts": iso(T0 + i * 0.02), "event_type": "view", "user_id": f"u{rng.randrange(9000)}",
             "session_id": f"x{rng.randrange(9000)}", "product_id": f"p{rng.randrange(5000)}", "price_eur": 3.0,

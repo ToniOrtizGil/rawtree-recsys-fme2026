@@ -1,7 +1,12 @@
 """Adapter for A1's runtime HookSet (rtrec/runtime/hooks.py): one object, all live updaters.
 
-    from rtrec.live.hooks import LiveHooks
-    Server(..., hooks=[LiveHooks()])
+    from rtrec.live.hook import LiveHook
+    Server(..., hooks=[LiveHook()])
+
+A1's CatalogTracker is the single writer of state.catalog / available / new_products and has
+already applied each catalogue batch when on_catalog_updates is called; here the live catalogue
+tracker runs with owner=False and only derives features (price/stock history, new-product
+neighbours).
 
 on_served also records which model_version answered each request and the request itself, so
 feedback (which carries neither user_id nor model_version) is attributed to the right shopper,
@@ -14,12 +19,16 @@ from rtrec.contract import State
 from . import learner
 
 
-class LiveHooks:
+class LiveHook:
     def on_start(self, state: State) -> None:
-        learner(state).init(state, list(state.catalog.values()))
+        lr = learner(state)
+        lr.catalog.owner = False
+        lr.init(state, list(state.catalog.values()))
 
     def on_catalog_updates(self, rows, state: State) -> None:
-        learner(state).on_catalog_updates(rows, state)
+        lr = learner(state)
+        lr.catalog.owner = False
+        lr.on_catalog_updates(rows, state)
 
     def on_events(self, rows, state: State) -> None:
         learner(state).on_events(rows, state)
