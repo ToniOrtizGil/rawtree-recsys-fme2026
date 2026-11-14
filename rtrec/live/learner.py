@@ -1,6 +1,7 @@
 """LiveLearner: one object holding every live updater; the hooks in rtrec.live delegate to it."""
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from collections import OrderedDict
@@ -42,14 +43,30 @@ class LiveLearner:
                                                  "feedback": 0, "requests": 0, "cpu_s": 0.0})
 
     def __post_init__(self):
-        # hooks may be called from several runtime threads: serialise them (readers never lock)
-        self._lock = threading.RLock()
-        for name in ("init", "on_catalog_updates", "on_events", "on_requests", "on_feedback", "flush"):
-            fn = getattr(self, name)
-            setattr(self, name, self._locked(fn))
+        self._wrap()
         if self.feedback is None:
             from .feedback import FeedbackLearner
             self.feedback = FeedbackLearner()
+
+    _HOOKS = ("init", "on_catalog_updates", "on_events", "on_requests", "on_feedback", "flush")
+
+    def _wrap(self):
+        # hooks may be called from several runtime threads: serialise them (readers never lock)
+        self._lock = threading.RLock()
+        for name in self._HOOKS:
+            setattr(self, name, self._locked(getattr(type(self), name).__get__(self)))
+
+    # pickling (A1's runtime snapshots state.live, which holds this object): drop lock + wrappers
+    def __getstate__(self):
+        with self._lock:
+            d = {k: v for k, v in self.__dict__.items() if k != "_lock" and k not in self._HOOKS}
+            return copy.deepcopy(d) if self._deep_copy_on_pickle else d
+
+    def __setstate__(self, d):
+        self.__dict__.update(d)
+        self._wrap()
+
+    _deep_copy_on_pickle = False
 
     def _locked(self, fn):
         def wrapper(*a, **kw):
