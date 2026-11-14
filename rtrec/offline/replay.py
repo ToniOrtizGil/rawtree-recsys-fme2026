@@ -69,6 +69,7 @@ def state_from_history(catalog: pd.DataFrame, sessions: pd.DataFrame, events: pd
     feed = LiveFeed(s, catalog)
     s.safe_list = [p for p in off["best_sellers"] if p in s.available][:200]
     if not events.empty:
+        live.seed_history(s, events)  # long-run subcategory/brand shares (A4), as the runtime does
         ev = events.assign(_t=events["ts"].map(to_epoch)).sort_values("_t")
         cut = ev._t.iloc[-1] - 3600.0 * warm_hours
         old, recent = ev[ev._t < cut].drop(columns="_t"), ev[ev._t >= cut].drop(columns="_t")

@@ -49,7 +49,7 @@ def evaluate_on_sim(sim, state: State, feed: LiveFeed, policies: list[Policy], m
     res = [PolicyResult(p.name) for p in policies]
     base_ep, orac_ep, cold_flags = [], [], []
     pending: list[tuple[float, dict]] = []  # feedback rows, delivered feedback_delay_s after the answer
-    t = float(getattr(sim, "start_ts", getattr(sim, "now", time.time())))
+    t = float(getattr(sim, "now", None) or getattr(sim, "start_ts", time.time()))
     t_end = t + 60.0 * minutes
     n = 0
     while t < t_end and (max_requests is None or n < max_requests):

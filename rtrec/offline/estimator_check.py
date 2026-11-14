@@ -59,7 +59,7 @@ def check(sim, state: State, feed: LiveFeed, policies: list[Policy], logger: Pop
     truth = {p.name: [] for p in policies}
     q_new = {p.name: [] for p in policies}
     shown, props, purchased, q_logged, logged_truth = [], [], [], [], []
-    t = float(getattr(sim, "start_ts", getattr(sim, "now", time.time())))
+    t = float(getattr(sim, "now", None) or getattr(sim, "start_ts", time.time()))
     t_end = t + 60 * minutes
     while t < t_end:
         t += step_s
