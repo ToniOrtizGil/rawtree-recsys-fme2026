@@ -1,19 +1,37 @@
 """Command line.
 
     python -m dashboard serve    [--store demo|fake|rawtree] [--port 8050] [--host 127.0.0.1] [--chaos]
+    python -m dashboard serve --store fake --with-runtime [--policy module:factory]
+                                 runs A1's serving loop on the FakeStore in this process and watches it
+                                 (the FakeStore is in memory: a separate process would see nothing)
     python -m dashboard check    [--store ...] [--warmup 3]      one line, exit 0 ok / 1 warning / 2 critical
     python -m dashboard sqlcheck [--store rawtree]               run every SQL twin once, report errors
 """
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
+import threading
 import time
 
 from . import alerts
 from .collector import Collector
 from .server import full_snapshot, start_in_background
 from .stores import default_kind, open_store
+
+
+def start_runtime(store, policy_spec: str = "", state_dir: str = "artifacts/dashboard-runtime"):
+    """A1's Server in a daemon thread, on the same store object as the dashboard (demo of the full loop)."""
+    from rtrec.runtime.serve import ServeConfig, Server
+    factory = None
+    if policy_spec:
+        mod, _, name = policy_spec.partition(":")
+        obj = getattr(importlib.import_module(mod), name)
+        factory = obj if callable(obj) and not hasattr(obj, "recommend") else (lambda: obj)
+    server = Server(store, policy_factory=factory, config=ServeConfig(role="primary", state_dir=state_dir))
+    threading.Thread(target=server.run, daemon=True, name="runtime").start()
+    return server
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,12 +45,16 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--host", default="127.0.0.1")
             p.add_argument("--port", type=int, default=8050)
             p.add_argument("--poll", type=float, default=1.5, help="seconds between store reads")
+            p.add_argument("--with-runtime", action="store_true", help="fake store: also run the serving loop")
+            p.add_argument("--policy", default="", help="module:factory for --with-runtime (default: built-in)")
         if name == "check":
             p.add_argument("--warmup", type=float, default=3.0, help="seconds to read before judging")
     a = ap.parse_args(argv)
     store = open_store(a.store, chaos=a.chaos)
 
     if a.cmd == "serve":
+        if getattr(a, "with_runtime", False):
+            start_runtime(store, a.policy)
         srv, col, _ = start_in_background(store, a.host, a.port, a.poll)
         print(f"dashboard on http://{a.host}:{a.port}  (store={a.store}, team={col.team}) — Ctrl+C to stop")
         try:

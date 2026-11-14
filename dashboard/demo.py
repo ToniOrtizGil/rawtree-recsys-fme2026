@@ -1,5 +1,5 @@
 """DemoStore: a tiny synthetic shop + a fake serving system, so the dashboard runs with no key and no
-other agent's code. It implements rtrec.store.Store (plus three read helpers the dashboard can use).
+other agent's code. It implements rtrec.store.Store (plus now() and dump() for tests).
 
 Everything here is SYNTHETIC and labelled as such on the page. It exists to exercise every panel:
 two model versions in an A/B split, cold and warm shoppers, a trend that moves every 10 minutes, new
@@ -63,6 +63,7 @@ class DemoStore:
         self.requests, self.events, self.updates = _Table(), _Table(), _Table()
         self.feedback, self.scratch = _Table(), _Table()
         self.submissions: dict[str, dict] = {}
+        self.sub_log = _Table()                   # submissions by insert time (they carry no ts)
         self._pending: list[tuple[float, dict]] = []
         self._make_catalog()
         self.feedback.add(self.t, {"request_id": "__init__", "ts": to_iso(self.t), "shown": [],
@@ -185,6 +186,7 @@ class DemoStore:
             reason = "invalid"
         if reason != "missing":
             self.submissions[rid] = {"request_id": rid, "items": items, "model_version": version}
+            self.sub_log.add(ts + latency / 1000, self.submissions[rid])
         shown = items if not reason else [p for p in self.bestsellers if p in self.available][:10]
         match = sum(1 / (1 + i) for i, p in enumerate(shown)
                     if self.products[p]["subcategory"] in {self.products[v]["subcategory"] for v in viewed})
@@ -213,7 +215,7 @@ class DemoStore:
                 (self.feedback.add(due, row) if due <= now else still.append((due, row)))
             self._pending = still
             if self.t - self.t0 > self.keep_s:
-                for tab in (self.requests, self.events, self.updates, self.feedback, self.scratch):
+                for tab in (self.requests, self.events, self.updates, self.feedback, self.scratch, self.sub_log):
                     tab.trim(now - self.keep_s)
 
     # ---------------------------------------------------------------- rtrec.store.Store
@@ -250,13 +252,13 @@ class DemoStore:
     def query(self, sql: str) -> list[dict]:
         raise NotImplementedError("DemoStore has no SQL engine (tests use chdb for that)")
 
-    # ---------------------------------------------------------------- optional readers the dashboard uses
-    def scratch_since(self, cursor: float, limit: int = 10_000) -> list[dict]:
+    def submissions_since(self, cursor: float, limit: int = 50_000) -> list[dict]:
         self._advance()
-        return self.scratch.since(cursor, limit)
+        return [r for r in self.sub_log.since(cursor, limit) if r]
 
-    def submissions_for(self, request_ids: list[str]) -> dict[str, str]:
-        return {rid: self.submissions[rid]["model_version"] for rid in request_ids if rid in self.submissions}
+    def scratch_since(self, cursor: float, limit: int = 10_000, kind: str | None = None) -> list[dict]:
+        self._advance()
+        return [r for r in self.scratch.since(cursor, limit) if kind is None or r.get("kind") == kind]
 
     def dump(self) -> dict[str, list[dict]]:
         """All tables as row lists (for loading into chdb in the SQL tests)."""

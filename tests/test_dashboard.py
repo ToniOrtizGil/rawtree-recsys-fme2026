@@ -13,7 +13,7 @@ from dashboard.demo import OUTAGE_EVERY_S, OUTAGE_LEN_S, DemoStore
 from dashboard.metrics import FB
 from dashboard.server import full_snapshot, make_server
 
-NOW = 1_763_197_200.0
+NOW = 1_794_733_200.0      # 2026-11-15 09:00:00 UTC (start of the final), fixed
 
 
 def fb(i, ok=True, reason="", lat=900.0, buy=False, version="v1", cold=False, ts=None):
