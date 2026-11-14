@@ -7,6 +7,7 @@ from rtrec import live
 live.init(state, catalog_rows)            # once: shop.catalog (list of dicts or DataFrame)
 live.on_catalog_updates(rows, state)      # shop.catalog_updates, every <= 0.5 s
 live.on_events(rows, state)               # shop.events (~50 rows/s, bursts of thousands)
+live.seed_history(state, history_events)  # optional, once: long-run subcat/brand shares (sharper trend lifts)
 live.on_requests(rows, state)             # shop.requests (optional; gives feedback a user_id / cold flag)
 live.on_feedback(rows, state)             # team_NN.feedback
 ```
@@ -49,7 +50,8 @@ Thread safety for readers (policies): every key below is either **replaced as a 
 | `trend_top` | list[pid] (300, available only) | snapshot | by `trend_rate` |
 | `trend_rising` | list[pid] (300, available only) | snapshot | by `trend_lift`, min support 2 weighted events |
 | `trend_top_by_subcat` | dict subcat → list[pid] (30) | snapshot | available, by `trend_rate` |
-| `subcat_lift` | dict subcat → float | snapshot | lift at subcategory level (more support) |
+| `subcat_lift` | dict subcat → float | snapshot | recent share of activity (5-min half-life) / long-run share from history (`live.seed_history`), shrunk to 1; falls back to a 3 h live counter |
+| `brand_lift` | dict brand → float | snapshot | lift at brand level (simulator trends hit a subcategory or a whole brand) |
 | `buy_rate` | dict pid → purchases/h (16-min half-life) | snapshot | organic purchases only |
 | `ctx_top` | dict (device, region) → list[pid] (30) | snapshot | carts+purchases, 1 h half-life — cold start for new shoppers |
 | `device_top` | dict (device,) → list[pid] (30) | snapshot | same, by device only |
@@ -105,3 +107,30 @@ products (lift 1 → log 0, ratio 1, rank 99): `trend_rate_log`, `trend_lift_log
 `minutes_since_new`, `back_in_stock_recent`, `calib_mult_log`, `calib_subcat_log`, `impressions_log`,
 `ctx_rank`, `coview_session`. No ids. For training, the same values can be rebuilt offline by
 replaying history through the hooks (they depend only on event time).
+
+## What the real stream looks like (practice round, 14-nov 09:00–12:25 UTC)
+
+Read-only analysis of `shop.catalog_updates`, `shop.events`, `shop.requests`, `shop.history_events`
+(aggregations in RawTree SQL; replay through `rtrec.live`). Numbers will be refreshed during the day.
+
+- **Catalogue updates (930)**: in 5-minute batches at round timestamps. 3 products go out of stock every
+  5 min and come back exactly 60 min later; `out_of_stock` rows carry `is_active=False`. 100 new
+  products all at 10:00; 620 price changes all at 10:30, all discounts (median −19 %, range 0–20 %).
+  No duplicates, no same-product ts ties, no out-of-order rows, no price change on an out-of-stock
+  product. Both catalogue trackers give the same available set, even after shuffling/duplicating the
+  rows: the two-clock rule is a safety net, not something today's stream needs.
+- **Trends are real, big and at subcategory level**: Aquariums 09:30–10:15 and Kettles 11:30–12:15
+  (45 min each, switched on/off as a step). During a trend the subcategory's share of views is ×4.5–4.8
+  its history share, of carts and purchases ×11–14, and purchases per view ×2–3. No brand-level
+  trend so far (brand lifts at 11:30 are just the kettle brands).
+- **Detection**: replaying 11:00–12:25 through `TrendTracker` with history shares, `subcat_lift`
+  puts Kettles at rank 0 one minute after onset (1.7 at +1 min, 3.0 at +5 min, ≈5 at plateau); the
+  runner-up never exceeds ≈1.4, so a threshold around 1.7 separates trend from noise. It fades
+  ≈8 min after the trend ends (5-min half-life).
+- **New products**: all 100 got organic events within 16 min (median first event ≈1 min after
+  creation); median 9 events in 15 min, 38 in 1 h; heavily skewed (best: 910 events, 128 purchases).
+  They over-index on purchases (2.7 % of purchases for 2.0 % of products): a novelty effect.
+- **Requests**: 30 % new shoppers, 20 % without recent views. Events ≈66/s.
+- **Cost**: real events cost ≈120 ms of CPU per 1,000 rows in the hooks (≈1 % of one core at 66/s);
+  a 2,000-row backfill chunk ≈240 ms, above A1's 50 ms per-call guideline, so backfill should use
+  chunks of ≤ 400 rows.

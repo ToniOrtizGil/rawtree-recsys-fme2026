@@ -177,7 +177,7 @@ function lineChart(el, pts, key, { fmt = (x) => f(x, 1), refs = [], yMin = null,
   const ticks = [lo, (lo + hi) / 2, hi];
   let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(key)} per minute">`;
   ticks.forEach((t) => { s += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="${css("--grid")}" stroke-width="1"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="${css("--muted")}">${esc(fmt(t))}</text>`; });
-  refs.forEach((r) => { if (r.y >= lo && r.y <= hi) s += `<line x1="${L}" x2="${W - R}" y1="${y(r.y)}" y2="${y(r.y)}" stroke="${css(r.color)}" stroke-width="1"/><text x="${W - R}" y="${y(r.y) - 4}" text-anchor="end" font-size="11" fill="${css("--ink-2")}">${esc(r.label)}</text>`; });
+  refs.forEach((r) => { if (r.y >= lo && r.y <= hi) s += `<line x1="${L}" x2="${W - R}" y1="${y(r.y)}" y2="${y(r.y)}" stroke="${css(r.color)}" stroke-width="1"/><text x="${W - R}" y="${y(r.y) + (r.below ? 13 : -4)}" text-anchor="end" font-size="11" fill="${css("--ink-2")}">${esc(r.label)}</text>`; });
   s += `<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="${css("--axis")}"/>`;
   [0, Math.floor(pts.length / 2), pts.length - 1].forEach((i) => { if (pts[i]) s += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="${css("--muted")}">${hhmm(pts[i].t)}</text>`; });
   s += `<path d="${d}" fill="none" stroke="${css("--series-1")}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
@@ -225,7 +225,7 @@ function render(s) {
     ["New products", s.new_products, "added during the event"],
   ];
   $("tiles").innerHTML = tiles.map(([l, v, sub]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`).join("");
-  lineChart($("c-ok"), s.series, "ok_pct", { fmt: (x) => f(x, 0, "%"), yMax: 100, refs: [{ y: 90, label: "light red ≤ 90", color: "--critical" }, { y: 98, label: "warn 98", color: "--warning" }] });
+  lineChart($("c-ok"), s.series, "ok_pct", { fmt: (x) => f(x, 0, "%"), yMax: 100, refs: [{ y: 90, label: "light red ≤ 90", color: "--critical", below: true }, { y: 98, label: "warn 98", color: "--warning" }] });
   lineChart($("c-lat"), s.series, "p95", { fmt: (x) => f(x, 0), yMin: 0, refs: [{ y: 3000, label: "deadline 3000", color: "--critical" }] });
   lineChart($("c-conv"), s.series, "p100_5m", { fmt: (x) => f(x, 1), yMin: 0 });
 

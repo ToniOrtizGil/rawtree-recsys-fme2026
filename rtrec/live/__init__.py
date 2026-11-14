@@ -4,6 +4,7 @@ The runtime (A1) owns threads and I/O; it only calls these hooks with the rows i
 
     from rtrec import live
     live.init(state, catalog_rows)          # once, after loading shop.catalog
+    live.seed_history(state, history_events) # optional, once: long-run shares for trend lifts
     live.on_catalog_updates(rows, state)    # shop.catalog_updates   (every <= 0.5 s)
     live.on_events(rows, state)             # shop.events            (~50 rows/s, bursts of thousands)
     live.on_requests(rows, state)           # shop.requests          (optional: enables per-user / cold A/B stats)
@@ -21,7 +22,7 @@ from rtrec.contract import State
 from .learner import LiveLearner
 
 __all__ = ["LiveLearner", "learner", "init", "on_events", "on_catalog_updates", "on_feedback",
-           "on_requests"]
+           "on_requests", "seed_history"]
 
 
 def learner(state: State) -> LiveLearner:
@@ -33,6 +34,10 @@ def learner(state: State) -> LiveLearner:
 
 def init(state: State, catalog_rows) -> None:
     learner(state).init(state, catalog_rows)
+
+
+def seed_history(state: State, history_events) -> None:
+    learner(state).seed_history(state, history_events)
 
 
 def on_events(rows, state: State) -> None:
