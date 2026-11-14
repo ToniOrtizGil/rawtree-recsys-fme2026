@@ -88,3 +88,12 @@ policy, the organisers' normalised score (global and cold) computed with `sim.ex
 
 Helpers for policies (pure): `rtrec.live.coldstart.cold_candidates(req, state)`,
 `new_product_prior(pid, state)`, `similarity(a, b)`.
+
+## Live features for the ranker (`rtrec/live/features.py`)
+
+`live_features(req, pid, state) -> dict` with keys `LIVE_FEATURES`; neutral defaults for unseen
+products (lift 1 → log 0, ratio 1, rank 99): `trend_rate_log`, `trend_lift_log`, `subcat_lift_log`,
+`buy_rate_log`, `price_ratio_to_base`, `price_last_change`, `price_changed_recently`, `is_new_product`,
+`minutes_since_new`, `back_in_stock_recent`, `calib_mult_log`, `calib_subcat_log`, `impressions_log`,
+`ctx_rank`, `coview_session`. No ids. For training, the same values can be rebuilt offline by
+replaying history through the hooks (they depend only on event time).
