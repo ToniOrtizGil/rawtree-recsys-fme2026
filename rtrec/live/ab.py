@@ -68,8 +68,12 @@ class ABTest:
                 return name
         return self._edges[-1][1]
 
-    def update(self, request_id: str, fb: dict, info=None) -> None:
-        a = self.stats[self.assign(request_id)]
+    def update(self, request_id: str, fb: dict, info=None, version: str | None = None) -> None:
+        """`version` = model_version actually served (from on_served) when it is one of the arms;
+        otherwise the arm is recomputed from the hash (fallbacks stay with the arm that caused them)."""
+        a = self.stats.get(version) if version else None
+        if a is None:
+            a = self.stats[self.assign(request_id)]
         bought = bool(fb.get("purchased"))
         a.n += 1
         a.buys += bought

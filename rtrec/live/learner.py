@@ -1,6 +1,7 @@
 """LiveLearner: one object holding every live updater; the hooks in rtrec.live delegate to it."""
 from __future__ import annotations
 
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ class LiveLearner:
     feedback: object | None = None          # FeedbackLearner, set in __post_init__ (avoids import cycle)
     seen_events: RecentKeys = field(default_factory=lambda: RecentKeys(500_000))
     requests: OrderedDict = field(default_factory=OrderedDict)   # request_id -> ReqInfo (bounded)
+    versions: dict = field(default_factory=dict)                  # request_id -> model_version served
     max_requests: int = 100_000
     prune_every_s: float = 600.0
     _last_prune: float = 0.0
@@ -40,9 +42,21 @@ class LiveLearner:
                                                  "feedback": 0, "requests": 0, "cpu_s": 0.0})
 
     def __post_init__(self):
+        # hooks may be called from several runtime threads: serialise them (readers never lock)
+        self._lock = threading.RLock()
+        for name in ("init", "on_catalog_updates", "on_events", "on_requests", "on_feedback", "flush"):
+            fn = getattr(self, name)
+            setattr(self, name, self._locked(fn))
         if self.feedback is None:
             from .feedback import FeedbackLearner
             self.feedback = FeedbackLearner()
+
+    def _locked(self, fn):
+        def wrapper(*a, **kw):
+            with self._lock:
+                return fn(*a, **kw)
+        wrapper.__name__ = fn.__name__
+        return wrapper
 
     # ------------------------------------------------------------------ hooks
     def init(self, state: State, catalog_rows) -> None:

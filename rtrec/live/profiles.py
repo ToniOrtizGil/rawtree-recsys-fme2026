@@ -33,7 +33,7 @@ class ProfileTracker:
         prof = state.users.get(uid)
         if prof is None:
             prof = state.users[uid] = UserProfile()
-        _insert(getattr(prof, attr), (t, str(ev["product_id"])), self.max_per_list)
+        setattr(prof, attr, _insert(getattr(prof, attr), (t, str(ev["product_id"])), self.max_per_list))
 
     def add_carousel(self, uid: str, t: float, clicked: str, purchased: str, state: State) -> None:
         """Carousel outcome from our feedback (the events table may not include carousel purchases)."""
@@ -42,18 +42,19 @@ class ProfileTracker:
             prof = state.users[uid] = UserProfile()
         prof.carousel_shown += 1
         if clicked:
-            _insert(prof.carousel_clicks, (t, clicked), self.max_per_list)
+            prof.carousel_clicks = _insert(prof.carousel_clicks, (t, clicked), self.max_per_list)
         if purchased and (t, purchased) not in prof.purchases:
-            _insert(prof.purchases, (t, purchased), self.max_per_list)
+            prof.purchases = _insert(prof.purchases, (t, purchased), self.max_per_list)
 
 
-def _insert(lst: list, item: tuple, cap: int) -> None:
+def _insert(lst: list, item: tuple, cap: int) -> list:
+    """Copy-on-write sorted insert: readers on other threads keep iterating the old list safely."""
     if not lst or item >= lst[-1]:
-        lst.append(item)
+        new = lst + [item]
     else:
-        bisect.insort(lst, item)
-    if len(lst) > cap:
-        del lst[: len(lst) - cap]
+        new = lst[:]
+        bisect.insort(new, item)
+    return new[-cap:] if len(new) > cap else new
 
 
 @dataclass
