@@ -44,13 +44,24 @@ def _fmt(x, unit="") -> str:
 
 
 def evaluate(s: dict) -> list[Alert]:
+    if s.get("polls", 1) == 0:
+        return [Alert("info", "WARMING_UP", "Dashboard is reading the last hours of data",
+                      "First read takes ~10 s on live RawTree. Numbers below are not meaningful yet.", "r0-triage")]
     out: list[Alert] = []
     li, ages = s["light"], s["ages"]
     n, pct = li["n"], li["ok_pct"]
     reasons = li.get("reasons", {})
     top = max(reasons, key=lambda k: reasons[k]) if any(reasons.values()) else None
 
-    if n >= T["min_answers"] and pct is not None and pct <= T["light_pct"]:
+    lm = s.get("last_minute") or {}
+    recovering = (lm.get("n") or 0) >= 10 and (lm.get("ok_pct") or 0) >= T["warn_pct"]
+    if n >= T["min_answers"] and pct is not None and pct <= T["light_pct"] and recovering:
+        # seen live on team_36: after a restart the 5-minute window still holds the old misses
+        out.append(Alert("warning", "LIGHT_RED_RECOVERING",
+                         f"Light still RED ({pct:.1f}%) but RECOVERING: last minute {lm['ok_pct']:.0f}% valid & on time",
+                         "Old misses are leaving the 5-minute window; it turns green by itself within 5 min. "
+                         "Do not restart anything.", "r6-recovering"))
+    elif n >= T["min_answers"] and pct is not None and pct <= T["light_pct"]:
         cause, anchor = CAUSE.get(top, ("Unknown fallback reason.", "r0-triage"))
         out.append(Alert("critical", "LIGHT_RED", f"Organisers' light is RED: {pct:.1f}% valid & on time (5 min)",
                          f"{n - li['ok']} of {n} answers served by fallback; mostly '{top}'. {cause}", anchor))

@@ -10,6 +10,7 @@ Definitions follow the organisers:
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -19,7 +20,8 @@ LIGHT_WINDOW_S = 300            # ... over the last 5 minutes
 
 
 def to_epoch(ts) -> float:
-    """ISO-8601 (with or without Z) or epoch number -> epoch seconds (UTC)."""
+    """ISO-8601 (with or without Z, any number of fractional digits) or epoch number -> epoch seconds (UTC).
+    Live RawTree returns '2026-11-14 09:00:00.014000000' (UTC, no zone suffix)."""
     if ts is None or ts == "":
         return 0.0
     if isinstance(ts, (int, float)):
@@ -30,6 +32,8 @@ def to_epoch(ts) -> float:
         s = str(ts).strip().replace(" ", "T")
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
+        # RawTree serialises DateTime64(9) with 9 fractional digits; Python 3.11 only parses up to 6
+        s = re.sub(r"(\.\d{6})\d+", r"\1", s)
         dt = datetime.fromisoformat(s)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)

@@ -99,9 +99,8 @@ def poll_forever(col: Collector, poll_s: float, stop: threading.Event) -> None:
 def start_in_background(store, host: str = "127.0.0.1", port: int = 8050, poll_s: float = 1.5):
     """Run collector + server in daemon threads. Returns (server, collector, stop_event)."""
     col = Collector(store)
-    col.poll()
+    srv = make_server(col, host, port)          # listen first: the first live read takes ~10 s
+    threading.Thread(target=srv.serve_forever, daemon=True, name="dash-http").start()
     stop = threading.Event()
     threading.Thread(target=poll_forever, args=(col, poll_s, stop), daemon=True, name="dash-poll").start()
-    srv = make_server(col, host, port)
-    threading.Thread(target=srv.serve_forever, daemon=True, name="dash-http").start()
     return srv, col, stop

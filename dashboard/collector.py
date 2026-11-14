@@ -51,6 +51,7 @@ class Collector:
         self._sql_ok: bool | None = None
         self.sql_results: dict[str, dict] = {}
         self._sql_ran = 0.0
+        self.polls = 0                       # 0 = first read still running (10 s on live RawTree: 3 h lookback)
 
     # ------------------------------------------------------------------ helpers
     def now(self) -> float:
@@ -103,6 +104,7 @@ class Collector:
             self._resolve_versions()
             self._poll_heartbeat()
             self._prune()
+            self.polls += 1
         if self.sql_every_s and self.now() - self._sql_ran >= self.sql_every_s and self.sql_capable():
             self.run_sql()
 
@@ -318,9 +320,10 @@ class Collector:
             hot = {t["subcategory"] for t in trends[:3] if t["lift"] >= 1.3}
             recent_req = sum(1 for v in reversed(self.requests.values()) if v[0] > now - 60)
             return {
-                "now": now, "store": self.kind, "team": self.team, "window_s": window_s,
+                "now": now, "store": self.kind, "team": self.team, "window_s": window_s, "polls": self.polls,
                 "uptime_s": now - self.started,
                 "light": {"status": metrics.light(w5), **metrics.reliability(w5)},
+                "last_minute": metrics.reliability(metrics.window(rows, now, 60)),
                 "latency_5m": metrics.latency(w5),
                 "reliability_window": metrics.reliability(ww),
                 "conversion": metrics.conversion([r for r in ww if r.ok]),
