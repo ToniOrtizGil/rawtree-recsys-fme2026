@@ -73,6 +73,7 @@ def heuristic_scores(X: np.ndarray) -> np.ndarray:
     s += 1.0 * c("user_sub_aff") + 0.5 * c("user_cat_aff") + 0.3 * c("user_carted")
     s -= 2.0 * c("user_bought")
     s += 0.3 * np.log(np.maximum(c("trend_prod"), 0.1)) + 0.2 * np.log(np.maximum(c("trend_sub"), 0.1))
+    s += 0.2 * np.log(np.maximum(c("trend_brand"), 0.1))
     s -= 0.3 * np.abs(c("price_ratio_session")) * (c("n_views") > 0)
     return s
 

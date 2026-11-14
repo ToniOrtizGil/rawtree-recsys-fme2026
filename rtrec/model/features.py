@@ -34,7 +34,7 @@ FEATURES = [
     # content (description words: the style a shopper likes, works for brand-new products)
     "desc_sim_session", "desc_sim_user",
     # live stream
-    "trend_prod", "trend_sub", "log_live_pop", "log_buy_rate", "price_to_base", "price_last_change",
+    "trend_prod", "trend_sub", "trend_brand", "log_live_pop", "log_buy_rate", "price_to_base", "price_last_change",
     # carousel slot (training: the logged slot; serving: 0)
     "slot",
 ]
@@ -45,8 +45,9 @@ _EMPTY_S = SubStats(0.0, 0.0, 1.0, 0.0, 0.0)
 DECAY = 0.7  # weight of the k-th most recent view = DECAY**k
 
 
-def _sim(ws: frozenset[str], bag: dict[str, float], idf: dict[str, float]) -> float:
-    return sum(bag.get(t, 0.0) * idf.get(t, 1.0) for t in ws)
+def _sim(ws: frozenset[str], bag: dict[str, float]) -> float:
+    """idf-weighted overlap; `bag` already holds weight x idf^2 per word (see featurize)."""
+    return sum(bag[t] for t in ws if t in bag)
 
 
 def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slot: int | list[int] = 0,
@@ -102,6 +103,7 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
         for tok in words(v):
             s_words[tok] = s_words.get(tok, 0.0) + DECAY ** k * idf.get(tok, 1.0)
     s_norm = sum(s_words.values()) or 1.0
+    s_bag = {tok: w * idf.get(tok, 1.0) / s_norm for tok, w in s_words.items()}
 
     # --- user profile summary ---
     prof = state.users.get(req.get("user_id", ""))
@@ -129,6 +131,7 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
             for tok in words(pid):
                 u_words[tok] = u_words.get(tok, 0.0) + idf.get(tok, 1.0)
     u_wnorm = sum(u_words.values()) or 1.0
+    u_bag = {tok: w * idf.get(tok, 1.0) / u_wnorm for tok, w in u_words.items()}
     u_tot = sum(u_sub.values()) or 1.0
     _, region, _ = context(req)
     ctx_cat, ctx_price = off.get("ctx_cat", {}), off.get("ctx_price", {})
@@ -136,7 +139,7 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
     new_user = 1.0 if req.get("is_new_user") else 0.0
 
     # live keys written by rtrec.live (docs/LIVE.md); all optional
-    tp, tsub = live.get("trend_lift") or {}, live.get("subcat_lift") or {}
+    tp, tsub, tbr = live.get("trend_lift") or {}, live.get("subcat_lift") or {}, live.get("brand_lift") or {}
     pop, buy, prices = live.get("trend_rate") or {}, live.get("buy_rate") or {}, live.get("price") or {}
     neigh = live.get("new_neighbours") or {}
     new = state.new_products
@@ -161,6 +164,7 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
             else:
                 conv, cart, lift = (ss.conv or gconv), ss.cart_rate, ss.car_lift
         pinfo = prices.get(pid)
+        wp = words(pid) if (s_bag or u_bag) else frozenset()
         created = to_epoch(p.get("created_at")) if p.get("created_at") else 0.0
         X[i] = (
             vcount.get(pid, 0), vrank.get(pid, 99), sub_w.get(sub, 0.0), cat_w.get(ca, 0.0), brand_w.get(br, 0.0),
@@ -173,9 +177,8 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
             1.0 if sub in bought_sub else 0.0, 1.0 if pid in carted else 0.0, new_user,
             dev_i, page_i, hour, ctx_cat.get((region, ca), 0.0), ctx_cat.get((device, ca), 0.0),
             appetite * math.log(price / 30.0),
-            _sim(words(pid), s_words, idf) / s_norm if s_words else 0.0,
-            _sim(words(pid), u_words, idf) / u_wnorm if u_words else 0.0,
-            tp.get(pid, 1.0), tsub.get(sub, 1.0), math.log1p(pop.get(pid, 0.0)), math.log1p(buy.get(pid, 0.0)),
+            _sim(wp, s_bag) if s_bag else 0.0, _sim(wp, u_bag) if u_bag else 0.0,
+            tp.get(pid, 1.0), tsub.get(sub, 1.0), tbr.get(br, 1.0), math.log1p(pop.get(pid, 0.0)), math.log1p(buy.get(pid, 0.0)),
             pinfo.ratio_to_base if pinfo else 1.0, pinfo.last_change_ratio if pinfo else 1.0,
             slots[i],
         )
