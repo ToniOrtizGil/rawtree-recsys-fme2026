@@ -49,3 +49,9 @@
 
 - Sesión iniciada 14-nov 11:10 UTC (12:10 CET). La práctica lleva abierta desde las 10:00 CET.
 - Final: 15-nov 09:00–11:00 UTC (10:00–12:00 CET). Congelación de código prevista 08:00 UTC.
+
+## Decisiones de integración (máster)
+
+- 14-nov 12:52 CET — **Un solo hilo de servicio es dueño del `State`** (diseño de A1): aplica las actualizaciones de catálogo justo antes de cada lote y ejecuta los hooks entre lotes, así que no hacen falta locks. El `CatalogTracker` de A1 (`rtrec/runtime/catalog.py`) es el **único escritor** de `state.catalog`, `state.available` y `state.new_products`. A4 solo escribe features derivadas en `state.live` y se engancha mediante `rtrec/live/hook.py:LiveHook` (hooks `on_start`, `on_catalog_updates`, `on_events`, `on_feedback`, `on_served`, `on_tick`). Sustituye a la decisión de las 12:46 (stock en A4).
+- Promoción a producción: `scripts/arbiter.py` (ver `docs/TASKS.md`).
+- Fuga de fiabilidad conocida: productos que se agotan entre nuestra respuesta y la evaluación del organizador (~1 % en el simulador de A1). Lo mide el test de carga de A1.
