@@ -65,7 +65,8 @@ def main(argv: list[str] | None = None) -> int:
             srv.shutdown()
         return 0
 
-    col = Collector(store, sql_every_s=0)
+    # check runs every minute from cron: 15 min of feedback covers every alert rule; keep RawTree reads small
+    col = Collector(store, lookback_s=900, events_lookback_s=300, sql_every_s=0)
     if a.cmd == "sqlcheck":
         if not col.sql_capable():
             print(f"store {a.store} cannot run SQL ({col.errors.get('sql', 'NotImplemented')})")
