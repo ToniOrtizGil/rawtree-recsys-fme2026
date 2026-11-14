@@ -42,6 +42,7 @@ Find the row, run the action, and say it in the team chat. Only the pilot runs c
 | `LIGHT_RED`, mostly `missing`, heartbeat **fresh** | writer failing (429 / 401 / network) | read the runtime log for insert errors (§5.1.3); check only one writer is running | if not fixed within 3 min: stop it, start **baseline-only** |
 | `LIGHT_RED`, mostly `late` | overload, or RawTree slow for everyone | restart primary; if still late, **baseline-only** | tell the master |
 | `LIGHT_RED`, mostly `invalid` | catalogue/stock refresh stuck | restart primary (state reloads in seconds) | if it persists, **baseline-only** |
+| `LIGHT_RED_RECOVERING` (red, last minute ≥ 98 %) | old misses still in the 5-min window | **nothing**: it clears by itself (§5.6) | if it turns back into `LIGHT_RED`, §5.0 |
 | `REQUESTS_STALLED`, everyone | organisers paused / 12:00 | nothing | event channel |
 | `READ_ERROR` only on the dashboard | watcher's laptop/network | restart the dashboard; **do not touch production** | — |
 | Conversion lower than Saturday | new shoppers, products and trends | **nothing** (not an alarm) | — |
@@ -97,12 +98,26 @@ Run these on the **production** machine unless the step says otherwise.
 9. ☐ Fallback drill on the standby only: confirm it answers with valid lists when promoted (A1).
 10. ☐ Everyone knows §3 and the decision rule.
 
+## 2a. Key-day findings (live RawTree, team_36, Sat 14 Nov 12:15–12:30 UTC)
+
+Measured against the real store. These override anything older in this file or in `docs/memory/`.
+
+| Finding | Consequence |
+|---|---|
+| All 7 dashboard SQL panels run on live RawTree (~0.2–0.3 s each) and agree with the Python numbers (differences = rows that arrived between the two reads) | `sqlcheck` is a valid smoke test; the SQL panel on the page is live |
+| `ts` columns are `DateTime64(9)`, returned as `2026-11-14 09:00:00.014000000` (UTC, no `Z`, 9 digits) | parsed by `dashboard.metrics.to_epoch`; any new reader must treat them as UTC |
+| `feedback.latency_ms` is **null** on `missing` answers | latency percentiles ignore missing answers by design |
+| The organisers counted an answer with `latency_ms` = 3297 as on time (served by `team`) | `late` in `fallback_reason` is the truth, not `latency_ms > 3000`; still keep p99 < 2.5 s |
+| `shop.requests`: `context.device/page/region` are flattened columns; `recent_views` is `Array(JSON)` (empty ones come back as `Array(Nullable(String))`); `__raw_data` is a `JSON` column | the cold/warm SQL reads views from `__raw_data::String`; verified live |
+| Before our primary answered, team_36 had ~3,300 feedback rows, all `fallback/missing`; best-seller fallback converted ≈1.1 purchases/100 | that is the 0 of the score; a running system with a dead writer looks exactly like this |
+| After a restart the light stays RED for up to 5 min while the last minute is already at 100 % | new alert `LIGHT_RED_RECOVERING` → §5.6: do **not** restart again |
+| First dashboard read takes ~10 s (3 h of requests, 5,100 products) | page shows `WARMING_UP`; ignore numbers until it clears |
+
 ## 2b. Key day: the first time we have the API key (any day, before Sunday)
 
 Run once, in this order, and paste the outputs in the team chat:
-1. ☐ `python -m dashboard sqlcheck --store rawtree`: every line `OK`. An error on `cold_warm` means
-   `shop.requests` has no `__raw_data`. Tell A5, because the cold/warm SQL must then read `recent_views` another way.
-   The Python cold/warm numbers on the page do not depend on it.
+1. ☐ `python -m dashboard sqlcheck --store rawtree`: every line `OK` (done Sat 12:25 UTC on team_36: 7/7 OK,
+   see §2a). Rerun it on the production machine before the final.
 2. ☐ `python -m dashboard check --store rawtree`: our reads work (`READ_ERROR` would show here).
 3. ☐ Start the primary (Commands above), then open the dashboard and watch the **first 10 minutes**:
    | Minute | Expect | If not |
@@ -206,6 +221,15 @@ One out-of-stock or inactive product invalidates the whole list.
    also stopped answering (`missing` grows once feedback resumes), restart production.
 3. Feedback stalled while requests flow: we cannot see our reliability. Use the organisers' light and the SQL
    queries by hand. Production itself does not depend on feedback.
+
+<a id="r6-recovering"></a>
+### 5.6 `LIGHT_RED_RECOVERING`: red, but the last minute is fine
+Seen on key day: right after a restart the 5-minute window still contains the old misses, so the light stays
+red while every new answer is valid and on time. The light turns green by itself once the old misses age out
+(at most 5 minutes after the problem stopped).
+1. Do **nothing** to production. A second restart would add new misses and keep the light red longer.
+2. Watch the per-minute chart: the last points should be at or near 100 %.
+3. If the alert switches back to `LIGHT_RED` (last minute below 98 %), the problem is back: go to §5.0.
 
 ## 6. What we never do on Sunday morning
 - Retrain, change features or merge branches after 09:00 (unless the master decides a rollback).

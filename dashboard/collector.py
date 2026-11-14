@@ -323,6 +323,7 @@ class Collector:
                 "now": now, "store": self.kind, "team": self.team, "window_s": window_s, "polls": self.polls,
                 "uptime_s": now - self.started,
                 "light": {"status": metrics.light(w5), **metrics.reliability(w5)},
+                "last_minute": metrics.reliability(metrics.window(rows, now, 60)),
                 "latency_5m": metrics.latency(w5),
                 "reliability_window": metrics.reliability(ww),
                 "conversion": metrics.conversion([r for r in ww if r.ok]),

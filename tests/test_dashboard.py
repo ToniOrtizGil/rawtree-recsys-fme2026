@@ -74,7 +74,7 @@ def _snap(**kw):
          "latency_5m": {"p50": 800, "p95": 1300, "p99": 1700}, "errors": {}, "uptime_s": 600,
          "conversion": {"p100": 5.0}}
     for k, v in kw.items():
-        s[k] = {**s[k], **v} if isinstance(v, dict) else v
+        s[k] = {**s.get(k, {}), **v} if isinstance(v, dict) else v
     return s
 
 
@@ -205,7 +205,7 @@ def test_server_endpoints():
             health = e.read().decode()
         assert "light=" in health
         rb = urllib.request.urlopen(base + "/runbook").read().decode()
-        for anchor in {v[1] for v in alerts.CAUSE.values()} | {"r0-triage", "r4-machine", "r5-stalled"}:
+        for anchor in {v[1] for v in alerts.CAUSE.values()} | {"r0-triage", "r4-machine", "r5-stalled", "r6-recovering"}:
             assert f'<a id="{anchor}"></a>' in rb             # every alert link lands on a section
         with pytest.raises(urllib.error.HTTPError):
             urllib.request.urlopen(base + "/nope")
@@ -224,6 +224,15 @@ def test_live_rawtree_shapes():
     assert not r.ok and r.latency_ms == 0.0 and metrics.latency([r])["n"] == 0
     # the organisers counted a 3297 ms answer as on time: the reason column, not latency, decides validity
     assert fb(1, lat=3297.0).ok
+
+
+def test_red_light_while_recovering_says_do_not_restart():
+    red = {"status": "red", "ok": 750, "ok_pct": 83.3, "reasons": {"missing": 150, "late": 0, "invalid": 0}}
+    s = _snap(light=red, last_minute={"n": 180, "ok": 180, "ok_pct": 100.0})
+    al = alerts.evaluate(s)
+    assert [a.code for a in al] == ["LIGHT_RED_RECOVERING"] and al[0].runbook == "r6-recovering"
+    s = _snap(light=red, last_minute={"n": 180, "ok": 90, "ok_pct": 50.0})
+    assert codes(s) == ["LIGHT_RED"]
 
 
 def test_warming_up_suppresses_false_alarms():
