@@ -8,8 +8,43 @@ points *and* costs reliability.
 Our rule for the morning: **change nothing unless an alert says so. If you do change something, change one
 thing and say it in the team chat first.**
 
-> Owner of this file: A5. Commands marked (A1) belong to the runtime. Check them against `ops/` once A1's
-> branch is merged; their final names may differ.
+> Owner of this file: A5. Commands marked (A1) belong to the runtime. They use the flags of
+> `python -m rtrec.runtime.serve` as of Saturday 13:00; A1 confirms the final wrappers (`ops/run.sh`).
+
+## Commands (fill `FINAL` at 07:00, then never retype them)
+
+```bash
+export RTREC_STORE=rawtree TEAM_ID=team_NN          # key: environment/.env only, never in git or chat
+export FINAL_POLICY=rtrec.model.policies:…          # chosen at 07:00 (§4)
+export HOOKS=rtrec.live.hook:LiveHook
+
+# primary (production machine)                                    (A1)
+python -m rtrec.runtime.serve --role primary --policy $FINAL_POLICY --hooks $HOOKS
+# standby (second machine): writes only if the primary heartbeat is lost   (A1)
+python -m rtrec.runtime.serve --role standby --policy $FINAL_POLICY --hooks $HOOKS
+# baseline-only (emergency): no --policy = built-in session/best-seller fallback chain   (A1)
+python -m rtrec.runtime.serve --role primary --hooks $HOOKS
+# watcher
+python -m dashboard serve            # http://127.0.0.1:8050
+python -m dashboard check            # one line, exit 0 ok / 1 warning / 2 critical
+```
+
+## Decision table for the final (10:00–12:00)
+
+Find the row, run the action, and say it in the team chat. Only the pilot runs commands on production.
+
+| Dashboard shows | Most likely | Action (pilot) | Then |
+|---|---|---|---|
+| Light green, no alert | all good | **nothing** | keep watching |
+| `SEEN_INVALID`, a few per hour | stock changed between read and judge | nothing, note it | §5.3 if it keeps growing |
+| `RELIABILITY_LOW` (<98 %), mostly `late` | slow machine / network | check `top` and the network (§5.2) | if p99 > 2500 ms for 5 min: restart primary with the lighter policy (master decides) |
+| `LIGHT_RED`, mostly `missing`, heartbeat **old** | primary dead / frozen | confirm standby took over (heartbeat role `standby`); if not, start the **primary** command on the standby machine | restart the dead one as `--role standby` only |
+| `LIGHT_RED`, mostly `missing`, heartbeat **fresh** | writer failing (429 / 401 / network) | read the runtime log for insert errors (§5.1.3); check only one writer is running | if not fixed within 3 min: stop it, start **baseline-only** |
+| `LIGHT_RED`, mostly `late` | overload, or RawTree slow for everyone | restart primary; if still late, **baseline-only** | tell the master |
+| `LIGHT_RED`, mostly `invalid` | catalogue/stock refresh stuck | restart primary (state reloads in seconds) | if it persists, **baseline-only** |
+| `REQUESTS_STALLED`, everyone | organisers paused / 12:00 | nothing | event channel |
+| `READ_ERROR` only on the dashboard | watcher's laptop/network | restart the dashboard; **do not touch production** | — |
+| Conversion lower than Saturday | new shoppers, products and trends | **nothing** (not an alarm) | — |
 
 ---
 
@@ -57,10 +92,27 @@ Run these on the **production** machine unless the step says otherwise.
 7. ☐ Health line is OK: `python -m dashboard check --store rawtree` exits 0, light green, p95 well under 2000 ms,
    heartbeat a few seconds old, model_version in the A/B table equals the chosen one.
 8. ☐ **Restart drill** (before 09:30 only): stop the primary process, wait 10 s, start it again with the deploy
-   command (A1: `ops/run.sh`). In the dashboard, `HEARTBEAT_LOST` should appear and then clear. The standby
+   primary command (Commands above). In the dashboard, `HEARTBEAT_LOST` should appear and then clear. The standby
    should take over during the gap and stand down after it, and the light should stay green.
 9. ☐ Fallback drill on the standby only: confirm it answers with valid lists when promoted (A1).
 10. ☐ Everyone knows §3 and the decision rule.
+
+## 2b. Key day: the first time we have the API key (any day, before Sunday)
+
+Run once, in this order, and paste the outputs in the team chat:
+1. ☐ `python -m dashboard sqlcheck --store rawtree`: every line `OK`. An error on `cold_warm` means
+   `shop.requests` has no `__raw_data`. Tell A5, because the cold/warm SQL must then read `recent_views` another way.
+   The Python cold/warm numbers on the page do not depend on it.
+2. ☐ `python -m dashboard check --store rawtree`: our reads work (`READ_ERROR` would show here).
+3. ☐ Start the primary (Commands above), then open the dashboard and watch the **first 10 minutes**:
+   | Minute | Expect | If not |
+   |---|---|---|
+   | 0–1 | requests/s ≈ 3, heartbeat < 5 s, `FEEDBACK_STALLED` may show briefly | `READ_ERROR` → key, team id, network |
+   | 1–2 | first feedback rows, served by `team` | all `missing` → we write to the wrong table/team (§5.1) |
+   | 2–5 | light estimate turns GREEN (needs 20 answers); p95 ≈ the organisers' `latency_ms` | p95 > 2000 ms → §5.2 before anything else |
+   | 5–10 | A/B table shows our `model_version`, not "(no submission row)"; cold column filling | "(no submission row)" → our submissions are not readable back; tell A1 |
+4. ☐ Compare our light with the organisers' light on the leaderboard: they must agree.
+5. ☐ Leave `python -m dashboard check --store rawtree` running every 10 minutes overnight (§3).
 
 ## 3. During the final (10:00–12:00): what to watch
 
@@ -113,7 +165,7 @@ Most likely, in order: the process is dead, the writer is stuck (inserts failing
 are writing to the wrong team or with a wrong key.
 1. Heartbeat old? Then the process is dead or frozen. The **standby should already be answering**. If it is not,
    promote it (A1) on the standby machine.
-2. Restart the primary with the deploy command (A1: `ops/run.sh`). It reloads its state snapshot in seconds.
+2. Restart the primary with the deploy primary command (Commands above). It reloads its state snapshot in seconds.
 3. Heartbeat fresh but answers still `missing`? Then the writer is failing. Look at the runtime log for HTTP
    errors on `/v1/tables/submissions`. 429 means rate limiting: the runtime batches inserts, so check that
    only one process is writing. 401/403 means a wrong key or team.
