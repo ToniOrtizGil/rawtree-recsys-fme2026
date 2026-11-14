@@ -30,4 +30,5 @@ Copias literales de las fuentes: `/home/user/datathon/sources/` (repo clonado, `
 
 ## Estado (actualizar)
 
-- 2026-11-14 12:30 CET — Fuentes leídas, memoria creada, plan redactado. **Nada ejecutado todavía.** A la espera del OK del usuario y de: credenciales (TEAM_ID + API key), repo compartido, máquina donde correrá el sistema.
+- 2026-11-14 12:30 CET — Fuentes leídas, memoria creada, plan redactado.
+- 2026-11-14 12:37 CET — Plan aprobado. Repo `ToniOrtizGil/rawtree-recsys-fme2026` con el contrato entre agentes; 5 sesiones-agente lanzadas (ver 05). **Sin API key** a propósito (el equipo aún elige entre dos retos): todo se desarrolla contra un simulador local (`sim/`) detrás de `rtrec.store.Store`. Pendiente del usuario: decisión de reto → TEAM_ID + clave (formulario seguro) y máquina de producción.
