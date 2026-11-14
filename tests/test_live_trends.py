@@ -88,3 +88,12 @@ def test_event_throughput():
         live.on_events(rows[i:i + 500], s)
     dt = time.perf_counter() - t0
     assert dt < 10.0, dt                       # >2,000 rows/s; nominal need is ~50/s
+
+
+def test_live_features_neutral_for_unknown_product():
+    from rtrec.live.features import LIVE_FEATURES, live_features
+    s = State()
+    live.init(s, [_prod("p1", "s")])
+    f = live_features({"request_id": "r", "recent_views": [], "context": {}}, "zzz", s)
+    assert set(f) == set(LIVE_FEATURES)
+    assert f["trend_lift_log"] == 0.0 and f["is_new_product"] == 0.0 and f["price_ratio_to_base"] == 1.0

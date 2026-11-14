@@ -65,12 +65,11 @@ class LiveLearner:
         t0 = time.perf_counter()
         n = 0
         for ev in rows:
-            key = (ev.get("ts"), ev.get("event_type"), ev.get("user_id"), ev.get("session_id"),
-                   ev.get("product_id"))
+            t = to_epoch(ev["ts"])   # key on epoch: robust to ts formatting differences on re-read
+            key = (t, ev.get("event_type"), ev.get("user_id"), ev.get("session_id"), ev.get("product_id"))
             if not self.seen_events.add(key):
                 self.stats["dup_events"] += 1
                 continue
-            t = to_epoch(ev["ts"])
             self.trends.add(ev, t, state)
             self.profiles.add(ev, t, state)
             self.coview.add(ev, t)

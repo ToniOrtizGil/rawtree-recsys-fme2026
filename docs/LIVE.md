@@ -56,5 +56,44 @@ Thread safety for readers (policies): every key below is either **replaced as a 
 | `reliability` | dict | same | last 2,000 answers: `team_rate`, `p50_ms`/`p95_ms`/`p99_ms` (organisers' latency), `fallback_reasons` |
 | `_learner`, `_subcat_index` | internal | — | do not read |
 
+| `ab` | `ABTest` | set by `rtrec.live.ab.install` | the running A/B test (arms, salt) |
+| `ab_report` | dict | every 50 feedback rows | per arm: `n`, `purchases_per_100`, `ci95`, cold, clicks, revenue, `team_rate`, `diff_vs_champion`, `diff_lower_bound`; `promote` = arm name or None |
+
+## Exploration (`rtrec/live/bandit.py`)
+
+`ThompsonExplorer.apply(req, ranked, state)` re-fills slots 9–10 (0-based 8, 9) by Thompson sampling
+over a pool (base ranks 9–20 + related new products) using `calib_posterior` (unseen products: their
+subcategory prior with high variance) times a rank-decay relevance prior. RNG seeded by `request_id`
+(reproducible, pure). `explorer.log` holds `(request_id, slot, pid, propensity)` for off-policy
+evaluation; the runtime may drain it into `team_NN.scratch`.
+
+## A/B (`rtrec/live/ab.py`)
+
+`ABTest([("v1", .5), ("v2", .5)], salt="ab1")`: arm = crc32(salt + request_id) bucket. Feedback is
+attributed by recomputing the arm (intention-to-treat). `ABRouter(test, {"v1": p1, "v2": p2})` is a
+Policy; **the runtime must write `router.version_for(req)` as `model_version`** when the policy has
+that method. Promotion: both arms >= `min_n` and one-sided 95 % lower bound of the difference > 0.
+
+## Policies (`rtrec/live/policy.py`)
+
+- `LiveSessionPolicy`: model-free, live-state-only session heuristic (cold-start specialist, reference).
+- `LiveWrapper(base, cold_merge, rerank, explore, alpha, beta, ...)`: adds live learning to any base
+  policy (A3's ranker): merges cold candidates on cold requests, re-ranks the head by
+  rank prior × calibration^alpha × trend-lift^beta × repeat-purchase penalty, explores slots 9–10.
+
+## Measuring (`rtrec/live/bench.py`)
+
+`python -m rtrec.live.bench --minutes 30` replays A2's simulator through the hooks and prints, per
+policy, the organisers' normalised score (global and cold) computed with `sim.expected_purchase`.
+
 Helpers for policies (pure): `rtrec.live.coldstart.cold_candidates(req, state)`,
 `new_product_prior(pid, state)`, `similarity(a, b)`.
+
+## Live features for the ranker (`rtrec/live/features.py`)
+
+`live_features(req, pid, state) -> dict` with keys `LIVE_FEATURES`; neutral defaults for unseen
+products (lift 1 → log 0, ratio 1, rank 99): `trend_rate_log`, `trend_lift_log`, `subcat_lift_log`,
+`buy_rate_log`, `price_ratio_to_base`, `price_last_change`, `price_changed_recently`, `is_new_product`,
+`minutes_since_new`, `back_in_stock_recent`, `calib_mult_log`, `calib_subcat_log`, `impressions_log`,
+`ctx_rank`, `coview_session`. No ids. For training, the same values can be rebuilt offline by
+replaying history through the hooks (they depend only on event time).
