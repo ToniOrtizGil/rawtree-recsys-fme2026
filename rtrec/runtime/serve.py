@@ -69,7 +69,7 @@ class ServeConfig:
     insert_hedge_s: float = 0.7         # send an identical copy if an insert is slower (live RTT ~0.3 s)
     request_lookback_s: float = 10.0    # on a cold start, look this far back for requests
     events_lookback_s: float = 600.0    # on a cold start, replay this much of shop.events to the hooks
-    hook_chunk: int = 2000
+    hook_chunk: int = 400               # A4 measured ~120 ms per 1k real events: keep each hook call short
     role: str = "primary"
     instance: str = field(default_factory=default_instance)
     takeover_after_s: float = 2.5
@@ -173,11 +173,14 @@ class Server:
             st = self.state
             scratch = State(catalog=dict(st.catalog), available=st.available, new_products=st.new_products,
                             safe_list=list(st.safe_list))
+            self._seed_events = None
             if _wants_args(self.policy_factory):
-                p = self.policy_factory(scratch, self._history_dump())
+                dump = self._history_dump()
+                self._seed_events = getattr(dump, "history_events", None)
+                p = self.policy_factory(scratch, dump)
             else:
                 p = self.policy_factory()
-            self._policy_ready.put((p, scratch))
+            self._policy_ready.put((p, scratch, self._seed_events))
             log.info("policy %s built in %.1f s", getattr(p, "name", "?"), time.perf_counter() - t0)
         except Exception:
             log.exception("policy factory failed; serving with the fallback policy")
@@ -185,9 +188,18 @@ class Server:
     def _adopt_policy(self) -> None:
         """Serving thread: install a policy built in the background, with what it computed."""
         try:
-            p, scratch = self._policy_ready.get_nowait()
+            p, scratch, seed_events = self._policy_ready.get_nowait()
         except queue.Empty:
             return
+        if seed_events is not None and not self.state.live.get("_seeded_history"):
+            t0 = time.perf_counter()
+            try:   # A4: long-run subcategory/brand baselines for the trend lifts (once; kept in snapshots)
+                from rtrec import live
+                live.seed_history(self.state, seed_events)
+                self.state.live["_seeded_history"] = True
+                log.info("live.seed_history in %.2f s", time.perf_counter() - t0)
+            except Exception:  # noqa: BLE001
+                log.exception("seed_history failed (continuing without it)")
         self.state.offline.update(scratch.offline)
         if scratch.users and not self.state.users:
             self.state.users = scratch.users
@@ -640,6 +652,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="module:factory returning a Policy (loaded in the background); default: built-in fallback")
     ap.add_argument("--hooks", default=os.environ.get("RTREC_HOOKS", ""),
                     help="comma-separated module:Class|factory for hook objects; default A4's LiveHook; 'none'")
+    ap.add_argument("--explore", type=float, default=float(os.environ.get("RTREC_EXPLORE", "0")),
+                    help="practice round: share of slots 4-10 explored (e.g. 0.2), propensities logged")
+    ap.add_argument("--served-log", action="store_true", default=os.environ.get("RTREC_SERVED_LOG") == "1",
+                    help="write one kind=served row per answer to team.scratch (training data)")
     ap.add_argument("--dashboard", type=int, default=int(os.environ.get("RTREC_DASHBOARD", "0")),
                     help="port: also run A5's dashboard in this process (needed with the in-memory fake store)")
     ap.add_argument("--role", default=os.environ.get("RTREC_ROLE", "primary"), choices=["primary", "standby"])
@@ -659,8 +675,16 @@ def main(argv: list[str] | None = None) -> int:
         hooks = []
     else:
         hooks = [as_factory(_load_obj(spec.strip()))() for spec in args.hooks.split(",") if spec.strip()]
+    if factory is not None and args.explore > 0:
+        from .explore import Explore
+        base, eps = factory, args.explore
+        factory = (lambda st, dump: Explore(base(st, dump), eps)) if _wants_args(base) \
+            else (lambda: Explore(base(), eps))
     cfg = ServeConfig(role=args.role, state_dir=args.state_dir)
     server = Server(store, policy_factory=factory, hooks=hooks, config=cfg)
+    if args.served_log:
+        from .explore import ServedLog
+        server.hooks.add(ServedLog(store, get_policy=lambda: server.runner.policy))
     if args.dashboard:
         from dashboard.server import start_in_background
         start_in_background(store, port=args.dashboard)
