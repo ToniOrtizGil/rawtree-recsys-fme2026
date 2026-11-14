@@ -3,9 +3,9 @@ __pycache__/
 .ipynb_checkpoints/
 .venv/
 *.egg-info/
-data/
-artifacts/
-logs/
+/data/
+/artifacts/
+/logs/
 *.parquet
 *.lgb
 .pytest_cache/
