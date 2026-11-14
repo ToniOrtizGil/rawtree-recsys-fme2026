@@ -1,7 +1,7 @@
 """Command line.
 
     python -m dashboard serve    [--store demo|fake|rawtree] [--port 8050] [--host 127.0.0.1] [--chaos]
-    python -m dashboard serve --store fake --with-runtime [--policy module:factory]
+    python -m dashboard serve --store fake --with-runtime [--policy module:factory] [--hooks module:factory,...]
                                  runs A1's serving loop on the FakeStore in this process and watches it
                                  (the FakeStore is in memory: a separate process would see nothing)
     python -m dashboard check    [--store ...] [--warmup 3]      one line, exit 0 ok / 1 warning / 2 critical
@@ -21,15 +21,27 @@ from .server import full_snapshot, start_in_background
 from .stores import default_kind, open_store
 
 
-def start_runtime(store, policy_spec: str = "", state_dir: str = "artifacts/dashboard-runtime"):
-    """A1's Server in a daemon thread, on the same store object as the dashboard (demo of the full loop)."""
+def _load(spec: str):
+    mod, _, name = spec.partition(":")
+    return getattr(importlib.import_module(mod), name)
+
+
+def start_runtime(store, policy_spec: str = "", hooks_spec: str = "",
+                  state_dir: str = "artifacts/dashboard-runtime"):
+    """A1's Server in a daemon thread, on the same store object as the dashboard (demo of the full loop).
+    Same spec format as `python -m rtrec.runtime.serve --policy/--hooks`."""
     from rtrec.runtime.serve import ServeConfig, Server
     factory = None
     if policy_spec:
-        mod, _, name = policy_spec.partition(":")
-        obj = getattr(importlib.import_module(mod), name)
-        factory = obj if callable(obj) and not hasattr(obj, "recommend") else (lambda: obj)
-    server = Server(store, policy_factory=factory, config=ServeConfig(role="primary", state_dir=state_dir))
+        obj = _load(policy_spec)
+        factory = obj if isinstance(obj, type) or not hasattr(obj, "recommend") else (lambda: obj)
+    hooks = []
+    for spec in filter(None, (x.strip() for x in hooks_spec.split(","))):
+        obj = _load(spec)
+        hooks.append(obj() if isinstance(obj, type) or not any(hasattr(obj, n) for n in ("on_events", "on_tick"))
+                     else obj)                     # a class or a factory function -> call it; an instance -> as is
+    server = Server(store, policy_factory=factory, hooks=hooks,
+                    config=ServeConfig(role="primary", state_dir=state_dir))
     threading.Thread(target=server.run, daemon=True, name="runtime").start()
     return server
 
@@ -47,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--poll", type=float, default=1.5, help="seconds between store reads")
             p.add_argument("--with-runtime", action="store_true", help="fake store: also run the serving loop")
             p.add_argument("--policy", default="", help="module:factory for --with-runtime (default: built-in)")
+            p.add_argument("--hooks", default="", help="comma-separated module:factory live hooks for --with-runtime")
         if name == "check":
             p.add_argument("--warmup", type=float, default=3.0, help="seconds to read before judging")
     a = ap.parse_args(argv)
@@ -54,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "serve":
         if getattr(a, "with_runtime", False):
-            start_runtime(store, a.policy)
+            start_runtime(store, a.policy, a.hooks)
         srv, col, _ = start_in_background(store, a.host, a.port, a.poll)
         print(f"dashboard on http://{a.host}:{a.port}  (store={a.store}, team={col.team}) — Ctrl+C to stop")
         try:
