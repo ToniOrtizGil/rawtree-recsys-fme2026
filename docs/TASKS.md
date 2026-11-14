@@ -10,7 +10,7 @@ Plan: `docs/memory/06_plan_ganador.md`. Everything below is buildable without an
 | A3 Model | `agent/a3-model` | `rtrec/model/`, `rtrec/offline/`, `scripts/train_*`, `scripts/eval_*`, `notebooks/model*`, `docs/MODEL.md`, `tests/test_model*`, `tests/test_offline*` |
 | A4 Live learning | `agent/a4-live` | `rtrec/live/`, `docs/LIVE.md`, `tests/test_live*` |
 | A5 Observability & demo | `agent/a5-demo` | `dashboard/`, `ops/RUNBOOK.md`, `docs/presentation/`, `README.md` sections "How it works"/"Demo", `tests/test_dashboard*` |
-| Master | `main` | contract files, `CLAUDE.md`, `docs/TASKS.md`, `docs/memory/`, merges |
+| Master | `main` | contract files, `CLAUDE.md`, `docs/TASKS.md`, `docs/memory/`, `scripts/arbiter.py`, `tests/test_arbiter.py`, merges |
 
 ## A1 Runtime
 1. `rtrec/stores/fake.py` FakeStore over a `sim.base.Simulator` (use a trivial stub sim until A2 ships), with a
@@ -68,3 +68,9 @@ Plan: `docs/memory/06_plan_ganador.md`. Everything below is buildable without an
 2. Alerts: on-time rate < 98 % over 5 min, heartbeat lost, feedback stalled.
 3. `ops/RUNBOOK.md`: Sunday procedure (freeze, checks, what to do if the light goes red).
 4. `docs/presentation/`: 5-slide story for a product manager + demo script.
+
+## Promotion rule (master)
+A policy goes to production only if `scripts/arbiter.py` (same seed, fresh simulator per policy, live hooks fed,
+baseline = fixed best sellers in stock, oracle = `sim.oracle`) gives it the best `score` without lowering
+`cold_score`, with 0 `policy_errors`, and A1's load test keeps p99 < 1.8 s with it. On real data the same
+decision is confirmed by an A/B on our own feedback.
