@@ -72,3 +72,10 @@ def test_heuristic_beats_baseline_on_toy(world):
     pol = rep["policies"]
     assert pol["baseline"]["score"] == pytest.approx(0.0, abs=1e-9)
     assert pol["v1-session-heuristic"]["score"] > 10
+
+
+@pytest.mark.parametrize("pol", POLICIES, ids=lambda p: p.name)
+def test_valid_before_finalize(world, pol):
+    sim, _, state, _ = world
+    for r in sim.advance(sim.now + 20).requests:
+        assert is_valid(list(pol.recommend(r, state))[:10], state)
