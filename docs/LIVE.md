@@ -134,3 +134,22 @@ Read-only analysis of `shop.catalog_updates`, `shop.events`, `shop.requests`, `s
 - **Cost**: real events cost ≈120 ms of CPU per 1,000 rows in the hooks (≈1 % of one core at 66/s);
   a 2,000-row backfill chunk ≈240 ms, above A1's 50 ms per-call guideline, so backfill should use
   chunks of ≤ 400 rows.
+
+## Trend boost A/B toggle (`rtrec/live/policy.py`)
+
+`trend_boost(base, strength=1.0, threshold=1.7)` multiplies a product's rank prior by
+(subcat_lift × brand_lift)^strength when that product is ≥ `threshold` (real stream: noise ≤ 1.4,
+trends 1.7–5); nothing else is re-ranked. `trend_boost_ab(base, state, share=0.5)` returns an
+`ABRouter` splitting by hash(request_id) between `base` and the boost and registers the test, so
+`state.live["ab_report"]` gives purchases/100 per arm with CI and a `promote` verdict. The runtime
+must write `router.version_for(req)` as `model_version`. Requires `live.seed_history` at start-up.
+
+## Snapshot / restore for A1 (`rtrec/live/persist.py`)
+
+Everything learnt lives in `state.live` (including `_learner`) and `state.users`; both pickle
+(the learner drops its lock on pickling and rebuilds it on load; `copy.deepcopy(State)` works).
+- A1's runtime snapshot (`serve.py save_snapshot`, pickling `state.live` and `state.users`) is enough.
+- Standalone: `persist.save(state, path)` (atomic tmp + rename) / `persist.load(state, path)`.
+- After restore: re-run `live.init` only if the learner is missing; event dedupe and decayed
+  counters survive, so re-reading the cursor overlap is harmless. Take the snapshot on the hook
+  thread (between batches).

@@ -244,3 +244,24 @@ def test_runtime_hook_adapter_and_chunk_latency():
     live.learner(s).flush(s)
     assert s.live["ab_report"]["arms"]["b"]["n"] == 1 and s.live["ab_report"]["arms"]["b"]["cold_n"] == 1
     assert s.users["u1"].purchases[-1][1] == "p1"
+
+
+def test_trend_boost_ab_toggle():
+    from rtrec.live.policy import trend_boost_ab
+    s = State()
+    live.init(s, [{"product_id": f"p{i}", "subcategory": f"s{i % 2}", "category": "c", "brand": "b", "price_eur": 1,
+                   "description": "", "created_at": "", "is_active": True} for i in range(20)])
+    s.live["subcat_lift"] = {"s1": 4.0, "s0": 1.2}
+
+    class Base:
+        name = "v1"
+
+        def recommend(self, req, state):
+            return [f"p{i}" for i in range(20)]
+
+    r = trend_boost_ab(Base(), s)
+    arms = {r.version_for({"request_id": f"r{i}"}) for i in range(50)}
+    assert arms == {"v1", "v1+trend-boost"} and "ab" in s.live
+    rid = next(f"r{i}" for i in range(50) if r.version_for({"request_id": f"r{i}"}) == "v1+trend-boost")
+    out = r.recommend({"request_id": rid, "recent_views": []}, s)
+    assert out[0] == "p1" and out[1] == "p0"          # trending s1 promoted, below-threshold s0 untouched

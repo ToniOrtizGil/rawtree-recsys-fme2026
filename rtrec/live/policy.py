@@ -46,7 +46,8 @@ class LiveWrapper:
     explore: bool = False
     alpha: float = 1.0          # weight of the calibration multiplier
     beta: float = 0.5           # weight of the product trend lift
-    group_beta: float = 0.0     # weight of subcategory x brand lift (simulator trends hit whole groups)
+    group_beta: float = 0.0     # weight of subcategory x brand lift (real trends hit whole subcategories)
+    group_min: float = 1.0      # ignore group lifts below this (real stream: noise <= 1.4, trends 1.7..5)
     gamma: float = 1.0          # rank prior 1 / (rank + 1)^gamma
     repeat_penalty: float = 0.2
     depth: int = 40             # how much of the base ranking is re-ranked
@@ -88,7 +89,8 @@ class LiveWrapper:
             if self.group_beta:
                 row = cat.get(p) or {}
                 g = sub_l.get(row.get("subcategory"), 1.0) * br_l.get(row.get("brand"), 1.0)
-                s *= min(max(g, lo), 2 * hi) ** self.group_beta
+                if g >= self.group_min:
+                    s *= min(g, 2 * hi) ** self.group_beta
             if p in bought:
                 s *= self.repeat_penalty
             scored.append((s, -r, p))
@@ -104,3 +106,20 @@ def _interleave(a: list[str], b: list[str]) -> list[str]:
                 seen.add(lst[i])
                 out.append(lst[i])
     return out
+
+
+def trend_boost(base, name: str | None = None, strength: float = 1.0, threshold: float = 1.7) -> LiveWrapper:
+    """Base policy + boost of products in trending subcategories/brands only (no other re-ranking)."""
+    return LiveWrapper(base, name=name or f"{getattr(base, 'name', 'base')}+trend-boost", cold_merge=False,
+                       alpha=0.0, beta=0.0, gamma=1.0, group_beta=strength, group_min=threshold)
+
+
+def trend_boost_ab(base, state, share: float = 0.5, salt: str = "trend1"):
+    """A/B toggle: hash(request_id) sends `share` of traffic to the trend boost. Registers the test
+    so feedback is attributed (state.live['ab_report']). Runtime writes router.version_for(req)."""
+    from .ab import ABRouter, ABTest, install
+    boosted = trend_boost(base)
+    control = getattr(base, "name", "base")
+    test = ABTest([(control, 1.0 - share), (boosted.name, share)], salt=salt)
+    install(state, test)
+    return ABRouter(test, {control: base, boosted.name: boosted}, name=f"ab:{salt}")
