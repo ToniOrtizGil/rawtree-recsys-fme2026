@@ -103,6 +103,25 @@ class SimConfig:
         return replace(self, **kw)
 
     @classmethod
+    def alt(cls, **kw) -> "SimConfig":
+        """A deliberately DIFFERENT shop, to check policies generalise instead of fitting our own guess:
+        steeper position curve, much stronger price sensitivity, weaker session affinity (taste and
+        context matter more), faster and stronger trends, milder repeat penalty, stronger novelty."""
+        hidden = HiddenModel(
+            examine=(0.42, 0.20, 0.11, 0.07, 0.05, 0.035, 0.025, 0.018, 0.013, 0.01),
+            click_bias=-6.1, w_quality=0.6, w_taste=2.3, w_intent_sub=1.0, w_intent_cat=0.9,
+            w_view_sub=0.5, w_view_brand=0.3, w_viewed=0.25, w_context=1.5, w_new=0.9, tau_new_s=1800.0,
+            w_price_click=1.1, w_price_drop=2.0, w_repeat=-1.5,
+            page_intent_mult=(("product", 1.0), ("category", 0.9), ("home", 0.7)),
+            buy_bias=-0.3, alpha_base=0.85, alpha_device=(("web", 0.0), ("ios", -0.45), ("android", 0.45)),
+            alpha_region_sd=0.35, alpha_user_sd=0.3, w_buy_price_drop=1.2,
+            trend_rate_per_hour=6.0, trend_duration_s=(8 * 60.0, 30 * 60.0), trend_log_lift=(1.0, 2.2),
+            trend_brand_share=0.5)
+        base = dict(seed=1007, hidden=hidden, new_user_share=0.5, no_view_share=0.35)
+        base.update(kw)
+        return cls(**base)
+
+    @classmethod
     def small(cls, **kw) -> "SimConfig":
         """Tiny world for unit tests: builds in about a second."""
         base = dict(n_products=900, brands_per_category=6, n_history_users=3000, history_days=4,
