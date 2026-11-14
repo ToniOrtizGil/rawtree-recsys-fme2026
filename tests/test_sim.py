@@ -145,3 +145,22 @@ def test_dump_layout(tmp_path):
     assert len(days) == 3          # 2 x 24 h ending Saturday 09:00 UTC span 3 calendar days
     df = pd.read_parquet(tmp_path / "history_sessions" / days[0])
     assert len(df.iloc[0]["shown"]) == 10 and "device" in df.iloc[0]["context"]
+
+
+def test_alt_preset_is_a_different_shop():
+    a = make_simulator(3, "small")
+    b = make_simulator(3, SimConfig.small(hidden=SimConfig.alt().hidden))
+    assert a.cfg.hidden != b.cfg.hidden and b.start_ts == b.stream_start
+    assert make_simulator(1, "alt").cfg.hidden.examine == SimConfig.alt().hidden.examine
+
+
+def test_expected_purchase_and_oracle_are_pure(sim, tick):
+    r = tick.requests[5]
+    ledger = {u: dict(d) for u, d in sim.model.ledger.items()}
+    before = sim.world.products.active.copy(), sim.now, len(sim._feedback)
+    for _ in range(3):
+        o = sim.oracle(r)
+        assert sim.oracle(r) == o
+        assert sim.expected_purchase(r, o) == sim.expected_purchase(r, o)
+    assert sim.model.ledger == ledger
+    assert (sim.world.products.active == before[0]).all() and sim.now == before[1] and len(sim._feedback) == before[2]
