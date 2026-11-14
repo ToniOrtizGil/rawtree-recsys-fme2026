@@ -21,21 +21,13 @@ from .clock import to_iso
 
 log = logging.getLogger("rtrec.heartbeat")
 
-HEARTBEAT_SQL = """
-SELECT instance::String AS instance, role::String AS role, seq::Int64 AS seq, ts_epoch::Float64 AS ts_epoch
-FROM {team}.scratch
-WHERE kind::String = 'heartbeat' AND ts_epoch::Float64 > {since}
-ORDER BY ts_epoch::Float64 DESC
-LIMIT 50"""
-
-
 def default_instance() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
 
 
 class Heartbeat:
     def __init__(self, store, clock, *, role: str = "primary", instance: str | None = None,
-                 takeover_after_s: float = 2.5, lookback_s: float = 600.0):
+                 takeover_after_s: float = 2.5, lookback_s: float = 120.0, model_version=None):
         assert role in ("primary", "standby")
         self.store = store
         self.clock = clock
@@ -49,20 +41,22 @@ class Heartbeat:
         self._primary_seen_at: float | None = None   # our clock, last time a primary seq moved
         self.active = role == "primary"
         self.takeovers = 0
+        self.model_version = model_version or (lambda: "")
 
     def beat(self, extra: dict | None = None) -> None:
         self.seq += 1
         now = self.clock.now()
-        row = {"kind": "heartbeat", "instance": self.instance, "role": self.role, "active": self.active,
-               "seq": self.seq, "ts": to_iso(now), "ts_epoch": now}
+        # protocol fields (rtrec/store.py): kind, ts, role, host, model_version; the rest is ours
+        row = {"kind": "heartbeat", "ts": to_iso(now), "role": self.role, "host": socket.gethostname(),
+               "model_version": self.model_version(), "instance": self.instance, "active": self.active,
+               "seq": self.seq, "ts_epoch": now}
         row.update(extra or {})
         self.store.insert_scratch([row])
 
     def _read(self) -> list[dict]:
-        since = self.clock.now() - self.lookback_s
-        if hasattr(self.store, "scratch_since"):
-            return self.store.scratch_since(since, kind="heartbeat")
-        return self.store.query(HEARTBEAT_SQL.format(team=self.store.team, since=since))
+        # the cursor uses our clock against the primary's ts: a generous lookback absorbs any skew,
+        # and the decision itself only looks at sequence numbers
+        return self.store.scratch_since(self.clock.now() - self.lookback_s, kind="heartbeat")
 
     def check(self) -> bool:
         """Standby: update `active` from the primary's heartbeats. Returns True if it changed."""

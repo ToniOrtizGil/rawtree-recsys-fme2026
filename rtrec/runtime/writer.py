@@ -9,6 +9,9 @@ Retry rules (an insert error does NOT prove nothing was written):
     content) makes the retry a no-op if the first attempt landed; even if it is not deduplicated,
     the duplicate carries the same items, so whichever copy counts, the answer is the same;
   * 429 -> wait `retry_after`; other errors -> short backoff (50, 100, 200 ms ...);
+  * hedging: if an insert has not returned after `hedge_after_s`, an identical copy is sent in
+    parallel and the first success wins (same dedup token, so at most one is stored). This cuts the
+    tail when one HTTP call stalls, which is what decides p99;
   * rows that can no longer arrive in time (`give_up_s` after the request ts on our clock) are
     dropped from the batch: sending them only wastes the rate limit.
 """
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 from rtrec.schemas import Submission
 
@@ -27,7 +31,7 @@ log = logging.getLogger("rtrec.writer")
 
 class Writer:
     def __init__(self, store, clock, journal: Journal, metrics: Metrics, *, give_up_s: float = 4.0,
-                 max_batch: int = 500):
+                 max_batch: int = 500, hedge_after_s: float | None = 0.35):
         self.store = store
         self.clock = clock
         self.journal = journal
@@ -39,6 +43,28 @@ class Writer:
         self._attempts = 0
         self._next_try = 0.0
         self._cv = threading.Condition()
+        self.hedge_after_s = hedge_after_s
+        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="insert") if hedge_after_s else None
+
+    def _insert(self, rows: list[Submission]) -> None:
+        if self._pool is None:
+            self.store.insert_submissions(rows)
+            return
+        first = self._pool.submit(self.store.insert_submissions, rows)
+        done, _ = wait([first], timeout=self.hedge_after_s)
+        if done:
+            first.result()
+            return
+        self.metrics.inc("insert_hedged")
+        pending = {first, self._pool.submit(self.store.insert_submissions, rows)}
+        error: BaseException | None = None
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for f in done:
+                if f.exception() is None:
+                    return
+                error = f.exception()
+        raise error
 
     # -------------------------------------------------------------- producer side
     def enqueue(self, rows: list[tuple[Submission, float]]) -> None:
@@ -77,7 +103,7 @@ class Writer:
             return False
         rows = [s for s, _ in alive]
         try:
-            self.store.insert_submissions(rows)
+            self._insert(rows)
         except Exception as e:  # noqa: BLE001 - every failure is retried or dropped, never fatal
             self._attempts += 1
             retry_after = getattr(e, "retry_after", None)

@@ -1,0 +1,23 @@
+# systemd unit for the serving loop. Install:
+#   sudo cp ops/rtrec.service /etc/systemd/system/rtrec@.service   (edit User and WorkingDirectory)
+#   sudo systemctl enable --now rtrec@primary      # or rtrec@standby on the second machine
+# The supervisor inside restarts hung processes; systemd restarts the supervisor itself.
+[Unit]
+Description=RawTree recommender serving loop (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rtrec
+WorkingDirectory=/opt/rtrec
+EnvironmentFile=/opt/rtrec/.env
+Environment=RTREC_STORE=rawtree RTREC_ROLE=%i RTREC_STATE_DIR=/opt/rtrec/artifacts/runtime-%i
+ExecStart=/opt/rtrec/.venv/bin/python -m rtrec.runtime.supervisor --status-file /opt/rtrec/artifacts/runtime-%i/status.json -- /opt/rtrec/.venv/bin/python -m rtrec.runtime.serve --role %i --state-dir /opt/rtrec/artifacts/runtime-%i
+Restart=always
+RestartSec=1
+KillMode=mixed
+TimeoutStopSec=5
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

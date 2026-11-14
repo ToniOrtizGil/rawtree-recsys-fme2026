@@ -80,3 +80,33 @@ def test_feedback_after_deadline_plus_delay():
     assert not [f for f in store.feedback_since(0) if f["request_id"] == r["request_id"]]
     clock.advance(1.0)
     assert [f for f in store.feedback_since(0) if f["request_id"] == r["request_id"]]
+
+
+def test_make_simulator_starts_now_and_does_not_swallow_errors(monkeypatch):
+    """Regression: a swallowed TypeError once gave a stream 3 h behind the wall clock."""
+    import time
+
+    import pytest
+
+    from rtrec.stores import make_simulator
+    sim = make_simulator(seed=1, small=True)
+    if hasattr(sim, "stream_start"):
+        assert abs(sim.stream_start - time.time()) < 60
+    import sim.shop as shop
+    monkeypatch.setattr(shop, "make_simulator", lambda **kw: (_ for _ in ()).throw(TypeError("bad config")))
+    with pytest.raises(TypeError):
+        make_simulator(seed=1)
+
+
+def test_policy_and_hook_specs_accept_classes_factories_and_instances():
+    from rtrec.runtime.policies import BaselinePolicy
+    from rtrec.runtime.serve import as_factory
+    assert isinstance(as_factory(BaselinePolicy)(), BaselinePolicy)              # class
+    inst = BaselinePolicy()
+    assert as_factory(inst)() is inst                                             # instance
+    assert isinstance(as_factory(lambda: BaselinePolicy())(), BaselinePolicy)    # factory
+
+    class Hook:
+        def on_events(self, rows, state):
+            pass
+    assert isinstance(as_factory(Hook)(), Hook)
