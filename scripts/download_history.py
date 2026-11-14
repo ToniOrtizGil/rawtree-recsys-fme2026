@@ -153,7 +153,10 @@ def fetch_window(query, table: str, t0: datetime, t1: datetime, use_raw: bool, d
 
 
 def ts_range(query, table: str, db: str = "shop") -> tuple[datetime, datetime]:
-    r = query(f"SELECT toString(min(ts::DateTime64(3))) AS lo, toString(max(ts::DateTime64(3))) AS hi FROM {db}.{table}")[0]
+    # feedback starts with a placeholder row (request_id '__init__') whose ts is far in the past
+    where = " WHERE request_id::String != '__init__'" if table == "feedback" else ""
+    r = query(f"SELECT toString(min(ts::DateTime64(3))) AS lo, toString(max(ts::DateTime64(3))) AS hi "
+              f"FROM {db}.{table}{where}")[0]
     parse = lambda s: datetime.fromisoformat(str(s).replace("Z", "").replace("T", " ")[:23]).replace(tzinfo=timezone.utc)
     return parse(r["lo"]), parse(r["hi"])
 
