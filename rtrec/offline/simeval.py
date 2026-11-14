@@ -88,7 +88,7 @@ def evaluate_on_sim(sim, state: State, feed: LiveFeed, policies: list[Policy], m
 def summarise(res: list[PolicyResult], base: np.ndarray, orac: np.ndarray, cold: np.ndarray) -> dict:
     out = {"n_requests": int(len(base)), "n_cold": int(cold.sum()),
            "baseline_per100": float(100 * base.mean()) if len(base) else float("nan"),
-           "oracle_per100": float(100 * np.nanmean(orac)) if len(orac) else float("nan"), "policies": {}}
+           "oracle_per100": float(100 * np.nanmean(orac)) if np.isfinite(orac).any() else float("nan"), "policies": {}}
     for r in res:
         ep = np.array(r.ep)
         row = {"per100": float(100 * ep.mean()), "score": _norm(ep.mean(), base.mean(), np.nanmean(orac)),

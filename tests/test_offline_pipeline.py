@@ -20,6 +20,7 @@ def test_train_export_load_and_serve(tmp_path):
     p = prepare(dump.catalog, dump.history_sessions, dump.history_events, log=lambda *_: None)
     assert p.X.shape[1] == len(FEATURES) and p.y.sum() > 0
     booster, metrics = fit(p, rounds=50, log=lambda *_: None)
+    assert booster.buy is not None
     path = tmp_path / "ranker.txt"
     rk.save(booster, path, metrics)
     loaded = rk.load(path)

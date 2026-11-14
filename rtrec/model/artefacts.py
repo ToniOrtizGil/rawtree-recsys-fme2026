@@ -13,6 +13,10 @@ Keys written into the returned dict (see docs/MODEL.md for the full contract):
   ctx_top       dict[device, list[pid]]          best products per device
   coview        dict[pid, list[(pid, weight)]]   top-20 products seen in the same sessions
   slot_rate     list[float]                      purchase rate per carousel slot (position bias)
+  ctx_cat       dict[(region|device, category), float]  log lift of buying intent for a category in a context
+  ctx_price     dict[region|device, float]       mean log price bought minus mean log price viewed (price appetite)
+  idf           dict[token, float]               inverse document frequency of description words
+  tokens        dict[pid, frozenset[str]]        description words of every catalogue product
 """
 from __future__ import annotations
 
@@ -22,6 +26,63 @@ import numpy as np
 import pandas as pd
 
 from .util import clean_id, to_epoch
+
+_STOP = frozenset("a an the and or of for with by in on to is it this that from at as its your our".split())
+
+
+def tokenize(text: str) -> frozenset[str]:
+    """Lower-case alphabetic words of a description, minus stop words (content signal, no IDs)."""
+    out, w = [], []
+    for ch in (text or "").lower():
+        if ch.isalpha():
+            w.append(ch)
+        elif w:
+            out.append("".join(w))
+            w = []
+    if w:
+        out.append("".join(w))
+    return frozenset(t for t in out if len(t) > 2 and t not in _STOP)
+
+
+def content_index(catalog: pd.DataFrame) -> tuple[dict[str, frozenset[str]], dict[str, float]]:
+    tokens = {str(p): tokenize(d) for p, d in zip(catalog.product_id, catalog.description.fillna(""))}
+    df: dict[str, int] = {}
+    for ts in tokens.values():
+        for t in ts:
+            df[t] = df.get(t, 0) + 1
+    n = max(len(tokens), 1)
+    return tokens, {t: float(np.log((n + 1) / (c + 1))) for t, c in df.items()}
+
+
+def context_stats(events: pd.DataFrame, catalog: pd.DataFrame) -> tuple[dict, dict]:
+    """How much more a region / device engages with each category than the shop overall (log lift,
+    shrunk), and its price appetite. Both are relations of the context, not of any shopper or product."""
+    if events.empty:
+        return {}, {}
+    cat = catalog.assign(product_id=catalog.product_id.astype(str)).set_index("product_id")
+    e = events.assign(product_id=events.product_id.astype(str))
+    e = e.join(cat[["category"]], on="product_id")
+    w = e.event_type.map({"view": 1.0, "add_to_cart": 3.0, "purchase": 6.0}).fillna(1.0)
+    e = e.assign(w=w, lp=np.log(e.price_eur.astype(float).clip(lower=0.5)))
+    glob = e.groupby("category").w.sum()
+    glob = glob / glob.sum()
+    ctx_cat, ctx_price = {}, {}
+    gb = e[e.event_type == "purchase"].lp.mean() - e[e.event_type == "view"].lp.mean()
+    for col in ("region", "device"):
+        tab = e.groupby([col, "category"]).w.sum().unstack(fill_value=0.0)
+        for key, row in tab.iterrows():
+            share = (row + 20 * glob.reindex(row.index).fillna(0)) / (row.sum() + 20)
+            for c, v in share.items():
+                g = glob.get(c, 0.0)
+                if g > 0:
+                    ctx_cat[(str(key), str(c))] = float(np.log(v / g))
+        bought = e[e.event_type == "purchase"].groupby(col).lp.agg(["sum", "count"])
+        viewed = e[e.event_type == "view"].groupby(col).lp.mean()
+        for key in viewed.index:
+            if key in bought.index:
+                s_, n_ = bought.loc[key, "sum"], bought.loc[key, "count"]
+                ctx_price[str(key)] = float((s_ + 10 * (viewed[key] + gb)) / (n_ + 10) - viewed[key])
+    return ctx_cat, ctx_price
 
 COVIEW_TOP = 20
 SUB_TOP = 30
@@ -146,5 +207,8 @@ def build_offline(catalog: pd.DataFrame, sessions: pd.DataFrame, events: pd.Data
         for d, g in dp.groupby("device"):
             ctx_top[str(d)] = g.sort_values("n", ascending=False).product_id.head(CTX_TOP).tolist()
 
-    return {"best_sellers": best_sellers, "prod": prod, "sub": subs, "sub_top": sub_top, "ctx_top": ctx_top,
+    ctx_cat, ctx_price = context_stats(ev, cat)
+    tokens, idf = content_index(cat)
+    return {"ctx_cat": ctx_cat, "ctx_price": ctx_price, "tokens": tokens, "idf": idf,
+            "best_sellers": best_sellers, "prod": prod, "sub": subs, "sub_top": sub_top, "ctx_top": ctx_top,
             "coview": coviews(ev), "slot_rate": slot_rate, "global_conv": float(g_conv), "history_days": days}
