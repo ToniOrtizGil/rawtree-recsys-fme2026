@@ -50,6 +50,7 @@ Thread safety for readers (policies): every key below is either **replaced as a 
 | `trend_rising` | list[pid] (300, available only) | snapshot | by `trend_lift`, min support 2 weighted events |
 | `trend_top_by_subcat` | dict subcat → list[pid] (30) | snapshot | available, by `trend_rate` |
 | `subcat_lift` | dict subcat → float | snapshot | lift at subcategory level (more support) |
+| `brand_lift` | dict brand → float | snapshot | lift at brand level (simulator trends hit a subcategory or a whole brand) |
 | `buy_rate` | dict pid → purchases/h (16-min half-life) | snapshot | organic purchases only |
 | `ctx_top` | dict (device, region) → list[pid] (30) | snapshot | carts+purchases, 1 h half-life — cold start for new shoppers |
 | `device_top` | dict (device,) → list[pid] (30) | snapshot | same, by device only |

@@ -40,6 +40,8 @@ class TrendTracker:
     p_buy: DecayedCounter = field(init=False)     # purchases only, short half-life
     s_short: DecayedCounter = field(init=False)
     s_long: DecayedCounter = field(init=False)
+    b_short: DecayedCounter = field(init=False)   # brand level: trends can hit a whole brand
+    b_long: DecayedCounter = field(init=False)
     g_short: DecayedCounter = field(init=False)
     g_long: DecayedCounter = field(init=False)
     ctx: DecayedCounter = field(init=False)       # (device, region, pid) weighted
@@ -51,6 +53,8 @@ class TrendTracker:
         self.p_buy = DecayedCounter(self.short_half_life_s * 2)
         self.s_short = DecayedCounter(self.short_half_life_s)
         self.s_long = DecayedCounter(self.long_half_life_s)
+        self.b_short = DecayedCounter(self.short_half_life_s)
+        self.b_long = DecayedCounter(self.long_half_life_s)
         self.g_short = DecayedCounter(self.short_half_life_s)
         self.g_long = DecayedCounter(self.long_half_life_s)
         self.ctx = DecayedCounter(self.ctx_half_life_s)
@@ -59,7 +63,8 @@ class TrendTracker:
     def add(self, ev: dict, t: float, state: State) -> None:
         w = EVENT_WEIGHT.get(ev.get("event_type"), 1.0)
         pid = str(ev["product_id"])
-        sub = (state.catalog.get(pid) or {}).get("subcategory")
+        row = state.catalog.get(pid) or {}
+        sub, brand = row.get("subcategory"), row.get("brand")
         self.p_short.add(pid, w, t)
         self.p_long.add(pid, w, t)
         if ev.get("event_type") == "purchase":
@@ -67,6 +72,9 @@ class TrendTracker:
         if sub is not None:
             self.s_short.add(sub, w, t)
             self.s_long.add(sub, w, t)
+        if brand is not None:
+            self.b_short.add(brand, w, t)
+            self.b_long.add(brand, w, t)
         self.g_short.add(0, w, t)
         self.g_long.add(0, w, t)
         if w > 1.0:   # context popularity: carts and purchases only (intent, not browsing)
@@ -117,14 +125,8 @@ class TrendTracker:
             rl = self.p_long.value(pid, now) / wl
             rate[pid] = 3600.0 * rs
             lift[pid] = (rs + a) / (rl + a) / gl
-        # subcategory lift (more support, so smaller smoothing)
-        n_sub = max(len(self.s_long.d), 1)
-        a_s = self.g_long.rate(0, now) / n_sub
-        sub_lift = {}
-        for sub, vs in self.s_short.items(now):
-            rs = vs / (self.s_short.warmup(now) * self.s_short.tau)
-            rl = self.s_long.rate(sub, now)
-            sub_lift[sub] = (rs + a_s) / (rl + a_s) / gl
+        sub_lift = self._group_lift(self.s_short, self.s_long, now, gl)
+        brand_lift = self._group_lift(self.b_short, self.b_long, now, gl)
 
         av_rate = sorted(((r, p) for p, r in rate.items() if p in avail), reverse=True)
         top = [p for _, p in av_rate[:self.top_n]]
@@ -152,9 +154,16 @@ class TrendTracker:
         live["trend_rising"] = rising
         live["trend_top_by_subcat"] = by_sub
         live["subcat_lift"] = sub_lift
+        live["brand_lift"] = brand_lift
         live["buy_rate"] = buy_rate
         live["ctx_top"] = ctx_top
         live["device_top"] = dev_top
+
+    def _group_lift(self, short: DecayedCounter, long: DecayedCounter, now: float, gl: float) -> dict:
+        """Lift per group (subcategory / brand): more support than a product, so lighter smoothing."""
+        a = self.g_long.rate(0, now) / max(len(long.d), 1)
+        ws = short.warmup(now) * short.tau
+        return {g: (vs / ws + a) / (long.rate(g, now) + a) / gl for g, vs in short.items(now)}
 
     def _group_top(self, counter: DecayedCounter, now: float, avail, key_len: int):
         groups: dict[tuple, list[tuple[float, str]]] = {}
