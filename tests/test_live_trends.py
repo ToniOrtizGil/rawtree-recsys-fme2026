@@ -88,3 +88,61 @@ def test_event_throughput():
         live.on_events(rows[i:i + 500], s)
     dt = time.perf_counter() - t0
     assert dt < 10.0, dt                       # >2,000 rows/s; nominal need is ~50/s
+
+
+def test_live_features_neutral_for_unknown_product():
+    from rtrec.live.features import LIVE_FEATURES, live_features
+    s = State()
+    live.init(s, [_prod("p1", "s")])
+    f = live_features({"request_id": "r", "recent_views": [], "context": {}}, "zzz", s)
+    assert set(f) == set(LIVE_FEATURES)
+    assert f["trend_lift_log"] == 0.0 and f["is_new_product"] == 0.0 and f["price_ratio_to_base"] == 1.0
+
+
+def test_hooks_from_threads_while_reading():
+    import threading
+    from rtrec.validate import finalize, is_valid
+    s = State()
+    live.init(s, [_prod(f"p{i}", f"s{i % 5}") for i in range(300)])
+    s.safe_list = [f"p{i}" for i in range(50)]
+    rng = random.Random(2)
+    evs = [_ev(T0 + i * 0.05, f"p{rng.randrange(300)}", uid=f"u{i % 30}", sid=f"s{i % 30}") for i in range(20000)]
+    ups = [{**_prod(f"p{i % 300}", f"s{i % 5}"), "ts": f"2026-11-15T09:{i // 60 % 60:02d}:{i % 60:02d}Z",
+            "change": "out_of_stock" if i % 2 else "back_in_stock"} for i in range(3000)]
+    errs = []
+
+    def feed(rows, hook, step):
+        try:
+            for i in range(0, len(rows), step):
+                hook(rows[i:i + step], s)
+        except Exception as e:  # pragma: no cover
+            errs.append(e)
+
+    ts = [threading.Thread(target=feed, args=(evs, live.on_events, 200)),
+          threading.Thread(target=feed, args=(ups, live.on_catalog_updates, 50))]
+    for t in ts:
+        t.start()
+    while any(t.is_alive() for t in ts):
+        avail = s.available                     # finalize works on one snapshot; check against it
+        out = finalize(list(s.live.get("trend_top") or []) + [p for _, p in (s.users.get("u1").views if "u1" in s.users else [])], s)
+        assert len(out) == 10 and len(set(out)) == 10
+        assert all(p in avail or p in s.available for p in out)
+    for t in ts:
+        t.join()
+    assert not errs
+
+
+def test_group_lift_against_history_baseline_is_sharp():
+    s = State()
+    live.init(s, [_prod(f"p{i}", f"s{i % 10}") for i in range(100)])
+    rng = random.Random(3)
+    hist = [_ev(T0 - 86400 + i, f"p{rng.randrange(100)}") for i in range(20000)]   # uniform shares
+    live.seed_history(s, hist)
+    rows = []
+    for i in range(6000):                     # 20 min live: s3 gets 4x its normal share of views
+        p = f"p{rng.randrange(10) * 10 + 3}" if rng.random() < 0.3 else f"p{rng.randrange(100)}"
+        rows.append(_ev(T0 + i * 0.2, p, uid=f"u{i}", sid=f"x{i}"))
+    live.on_events(rows, s)
+    live.learner(s).flush(s)
+    sl = s.live["subcat_lift"]
+    assert sl["s3"] > 2.5 and max(v for k, v in sl.items() if k != "s3") < 1.0

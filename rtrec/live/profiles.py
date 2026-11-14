@@ -14,6 +14,7 @@ from __future__ import annotations
 import bisect
 import heapq
 import math
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from rtrec.contract import State, UserProfile
@@ -24,36 +25,48 @@ _LIST = {"view": "views", "add_to_cart": "carts", "purchase": "purchases"}
 @dataclass
 class ProfileTracker:
     max_per_list: int = 200
+    max_users: int = 300_000         # live profiles kept; least recently active ones are evicted
+    touched: OrderedDict = field(default_factory=OrderedDict)    # uid -> None, LRU order
+
+    def _touch(self, uid: str, state: State) -> None:
+        self.touched[uid] = None
+        self.touched.move_to_end(uid)
+        while len(self.touched) > self.max_users:
+            old, _ = self.touched.popitem(last=False)
+            state.users.pop(old, None)
 
     def add(self, ev: dict, t: float, state: State) -> None:
         uid = ev.get("user_id")
         attr = _LIST.get(ev.get("event_type"))
         if not uid or attr is None:
             return
+        self._touch(uid, state)
         prof = state.users.get(uid)
         if prof is None:
             prof = state.users[uid] = UserProfile()
-        _insert(getattr(prof, attr), (t, str(ev["product_id"])), self.max_per_list)
+        setattr(prof, attr, _insert(getattr(prof, attr), (t, str(ev["product_id"])), self.max_per_list))
 
     def add_carousel(self, uid: str, t: float, clicked: str, purchased: str, state: State) -> None:
         """Carousel outcome from our feedback (the events table may not include carousel purchases)."""
+        self._touch(uid, state)
         prof = state.users.get(uid)
         if prof is None:
             prof = state.users[uid] = UserProfile()
         prof.carousel_shown += 1
         if clicked:
-            _insert(prof.carousel_clicks, (t, clicked), self.max_per_list)
+            prof.carousel_clicks = _insert(prof.carousel_clicks, (t, clicked), self.max_per_list)
         if purchased and (t, purchased) not in prof.purchases:
-            _insert(prof.purchases, (t, purchased), self.max_per_list)
+            prof.purchases = _insert(prof.purchases, (t, purchased), self.max_per_list)
 
 
-def _insert(lst: list, item: tuple, cap: int) -> None:
+def _insert(lst: list, item: tuple, cap: int) -> list:
+    """Copy-on-write sorted insert: readers on other threads keep iterating the old list safely."""
     if not lst or item >= lst[-1]:
-        lst.append(item)
+        new = lst + [item]
     else:
-        bisect.insort(lst, item)
-    if len(lst) > cap:
-        del lst[: len(lst) - cap]
+        new = lst[:]
+        bisect.insort(new, item)
+    return new[-cap:] if len(new) > cap else new
 
 
 @dataclass

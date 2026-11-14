@@ -49,6 +49,7 @@ class ShopSimulator:
         self.model = PurchaseModel(self.world, cfg.hidden)
         self.carousel = OldCarousel(cfg.logging_rank_power, cfg.logging_floor)
         self.stream_start = cfg.stream_start
+        self.start_ts = cfg.stream_start          # alias used by scripts/arbiter.py
         self.now = cfg.stream_start
         self._history: HistoryDump | None = None
         self._hist_sessions: Sessions | None = None
@@ -509,7 +510,10 @@ class ShopSimulator:
                 "reliability": float(df.ok.mean()), "revenue_per_request": float(df.revenue.mean())}
 
 
-def make_simulator(seed: int = 7, config: SimConfig | None = None, **overrides) -> ShopSimulator:
-    """Entry point used by FakeStore, tests and notebooks."""
+def make_simulator(seed: int = 7, config: SimConfig | str | None = None, **overrides) -> ShopSimulator:
+    """Entry point used by FakeStore, tests and notebooks. config may be a SimConfig or a preset
+    name: "default", "alt" (a deliberately different hidden model) or "small"."""
+    if isinstance(config, str):
+        config = {"default": SimConfig, "alt": SimConfig.alt, "small": SimConfig.small}[config]()
     cfg = (config or SimConfig()).with_(seed=seed, **overrides)
     return ShopSimulator(cfg)

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtrec live</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6; --series-8: #e34948;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-ink: #006300; --wash: rgba(42,120,214,0.10);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #0ca30c; --series-7: #9085e9; --series-8: #e66767;
+    --good-ink: #0ca30c; --wash: rgba(57,135,229,0.12);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  --series-5: #d55181; --series-6: #0ca30c; --series-7: #9085e9; --series-8: #e66767;
+  --good-ink: #0ca30c; --wash: rgba(57,135,229,0.12);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; }
+.meta { color: var(--ink-2); font-size: 13px; }
+.banner { background: var(--warning); color: #0b0b0b; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+main { padding: 16px; display: grid; gap: 16px; max-width: 1400px; margin: 0 auto; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; min-width: 0; }
+.card h2 { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; }
+.row { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.tile .v { font-size: 26px; font-weight: 600; }
+.tile .l { color: var(--ink-2); font-size: 12px; }
+.tile .s { color: var(--muted); font-size: 12px; }
+.light { display: flex; gap: 14px; align-items: center; }
+.light .dot { width: 56px; height: 56px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 28px; color: #fff; font-weight: 700; }
+.light .big { font-size: 30px; font-weight: 700; }
+.st-green { background: var(--good); } .st-red { background: var(--critical); } .st-unknown { background: var(--muted); }
+.pill { display: inline-flex; gap: 6px; align-items: center; padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 12px; }
+.pill.ok { background: var(--good); color: #fff; } .pill.warning { background: var(--warning); color: #0b0b0b; } .pill.critical { background: var(--critical); color: #fff; }
+.alerts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.alerts li { border-left: 4px solid var(--muted); padding: 6px 10px; background: var(--page); border-radius: 4px; }
+.alerts li.critical { border-color: var(--critical); } .alerts li.warning { border-color: var(--warning); }
+.alerts .t { font-weight: 600; } .alerts .d { color: var(--ink-2); font-size: 13px; }
+a { color: var(--series-1); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+td.n, th.n { text-align: right; }
+.scroll { overflow-x: auto; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: 150px; overflow: visible; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; white-space: nowrap; z-index: 3; }
+.btns button { font: inherit; font-size: 12px; padding: 2px 10px; border: 1px solid var(--border); background: var(--page); color: var(--ink); border-radius: 999px; cursor: pointer; }
+.btns button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.feed { display: grid; gap: 10px; }
+.req { border: 1px solid var(--grid); border-radius: 6px; padding: 8px 10px; }
+.req .hd { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--ink-2); }
+.items { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.it { font-size: 12px; border: 1px solid var(--grid); border-radius: 4px; padding: 2px 6px; background: var(--page); }
+.it b { font-weight: 600; } .it .tg { color: var(--ink-2); }
+.it.buy { outline: 2px solid var(--good); } .it.click { outline: 2px dashed var(--series-1); }
+.tag { font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--border); }
+.tag.cold { border-color: var(--series-1); }
+details { border-top: 1px solid var(--grid); padding: 6px 0; }
+summary { cursor: pointer; font-weight: 600; }
+pre { background: var(--page); padding: 8px; border-radius: 6px; overflow-x: auto; font-size: 12px; }
+.lift { display: inline-block; height: 8px; background: var(--series-1); border-radius: 0 4px 4px 0; vertical-align: middle; }
+.muted { color: var(--muted); }
+.legend { display: flex; gap: 12px; font-size: 12px; color: var(--ink-2); flex-wrap: wrap; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.err { color: var(--critical); font-size: 12px; }
+@media (max-width: 600px) { .light .big { font-size: 24px; } .tile .v { font-size: 22px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>rtrec · live</h1>
+  <span id="status" class="pill">…</span>
+  <span id="banner"></span>
+  <span class="meta" id="meta">connecting…</span>
+</header>
+<main>
+  <div class="row">
+    <section class="card" aria-labelledby="h-light">
+      <h2 id="h-light">Organisers' light (our estimate)</h2>
+      <div class="light"><div class="dot st-unknown" id="ldot">?</div>
+        <div><div class="big" id="lpct">–</div><div class="meta" id="lsub">valid &amp; on time, last 5 min · green needs &gt; 90 %</div></div></div>
+    </section>
+    <section class="card" aria-labelledby="h-alerts" style="grid-column: span 2">
+      <h2 id="h-alerts">Alerts</h2>
+      <ul class="alerts" id="alerts"><li>…</li></ul>
+    </section>
+  </div>
+
+  <section class="card"><div class="tiles" id="tiles"></div></section>
+
+  <div class="row">
+    <section class="card"><h2>% valid &amp; on time · per minute</h2><div class="chart" id="c-ok"></div></section>
+    <section class="card"><h2>Latency p95 (ms) · per minute</h2><div class="chart" id="c-lat"></div></section>
+    <section class="card"><h2>Purchases per 100 · trailing 5 min</h2><div class="chart" id="c-conv"></div></section>
+  </div>
+
+  <section class="card">
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center">
+      <h2 style="margin:0">Conversion by model_version (A/B) and cold vs warm</h2>
+      <div class="btns" id="win">Window:
+        <button data-w="15">15 min</button><button data-w="60" aria-pressed="true">60 min</button><button data-w="120">2 h</button><button data-w="180">3 h</button>
+      </div>
+    </div>
+    <p class="meta">Observed purchases per 100 requests with 95 % interval. The organisers score the <em>expected</em> purchase probability; observed rates match it on average but are noisy: overlapping intervals mean “no proven difference yet”.</p>
+    <div class="scroll"><table id="versions"></table></div>
+  </section>
+
+  <div class="row">
+    <section class="card"><h2>Fallback reasons</h2><div class="scroll"><table id="reasons"></table></div></section>
+    <section class="card"><h2>Trending now (organic views, last 5 min vs 15 min before)</h2><div class="scroll"><table id="trends"></table></div></section>
+  </div>
+
+  <section class="card">
+    <h2>Live: the last shoppers and the 10 products they saw</h2>
+    <p class="meta">Tags are the dashboard's reading of each pick: <b>viewed</b> (in this session), <b>same subcategory/category/brand</b> as something viewed, <b>new</b> (added during the event), <b>trending</b>, <b>selling now</b>. Solid outline = purchased, dashed = clicked.</p>
+    <div class="feed" id="feed"></div>
+  </section>
+
+  <section class="card">
+    <h2>Computed inside RawTree (SQL twins of the panels)</h2>
+    <p class="meta" id="sqlnote"></p>
+    <div id="sql"></div>
+  </section>
+</main>
+<script>
+"use strict";
+let WIN = 60;
+try { WIN = Number(localStorage.getItem("rtrec.win")) || 60; } catch (e) {}
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const f = (x, d = 1, u = "") => (x === null || x === undefined || Number.isNaN(x)) ? "–" : Number(x).toFixed(d) + u;
+const ago = (s) => s === null || s === undefined ? "never" : s < 90 ? `${s.toFixed(0)} s ago` : `${(s / 60).toFixed(0)} min ago`;
+const hhmm = (t) => new Date(t * 1000).toISOString().slice(11, 16) + " UTC";
+const hhmmss = (t) => new Date(t * 1000).toISOString().slice(11, 19);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const ICON = { ok: "✓", warning: "!", critical: "✕", green: "✓", red: "✕", unknown: "?" };
+
+// Colour follows the entity: each model_version keeps the slot it got first, for the whole session.
+const slots = {};
+function versionColor(v) {
+  if (v.startsWith("(")) return css("--muted");
+  if (!(v in slots)) slots[v] = Object.keys(slots).length % 8 + 1;
+  return css(`--series-${slots[v]}`);
+}
+
+function lineChart(el, pts, key, { fmt = (x) => f(x, 1), refs = [], yMin = null, yMax = null } = {}) {
+  const W = el.clientWidth || 300, H = 150, L = 40, R = 8, T = 8, B = 22;
+  const vals = pts.map((p) => p[key]).filter((v) => v !== null && v !== undefined);
+  let lo = yMin ?? Math.min(...vals, ...refs.map((r) => r.y)), hi = yMax ?? Math.max(...vals, ...refs.map((r) => r.y));
+  if (!vals.length) { lo = yMin ?? 0; hi = yMax ?? 1; }
+  if (hi - lo < 1e-9) hi = lo + 1;
+  const x = (i) => L + (W - L - R) * i / Math.max(1, pts.length - 1);
+  const y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  let d = "", pen = false;
+  pts.forEach((p, i) => { const v = p[key]; if (v === null || v === undefined) { pen = false; return; } d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1); pen = true; });
+  const ticks = [lo, (lo + hi) / 2, hi];
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(key)} per minute">`;
+  ticks.forEach((t) => { s += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}" stroke="${css("--grid")}" stroke-width="1"/><text x="${L - 6}" y="${y(t) + 4}" text-anchor="end" font-size="11" fill="${css("--muted")}">${esc(fmt(t))}</text>`; });
+  refs.forEach((r) => { if (r.y >= lo && r.y <= hi) s += `<line x1="${L}" x2="${W - R}" y1="${y(r.y)}" y2="${y(r.y)}" stroke="${css(r.color)}" stroke-width="1"/><text x="${W - R}" y="${y(r.y) - 4}" text-anchor="end" font-size="11" fill="${css("--ink-2")}">${esc(r.label)}</text>`; });
+  s += `<line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="${css("--axis")}"/>`;
+  [0, Math.floor(pts.length / 2), pts.length - 1].forEach((i) => { if (pts[i]) s += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="11" fill="${css("--muted")}">${hhmm(pts[i].t)}</text>`; });
+  s += `<path d="${d}" fill="none" stroke="${css("--series-1")}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const last = [...pts].reverse().findIndex((p) => p[key] !== null && p[key] !== undefined);
+  if (last >= 0) { const i = pts.length - 1 - last; s += `<circle cx="${x(i)}" cy="${y(pts[i][key])}" r="4" fill="${css("--series-1")}" stroke="${css("--surface")}" stroke-width="2"/>`; }
+  s += `<line id="${el.id}-x" y1="${T}" y2="${H - B}" stroke="${css("--axis")}" visibility="hidden"/><circle id="${el.id}-d" r="5" fill="${css("--series-1")}" stroke="${css("--surface")}" stroke-width="2" visibility="hidden"/>`;
+  s += `<rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" id="${el.id}-hit"/></svg><div class="tip" id="${el.id}-tip"></div>`;
+  el.innerHTML = s;
+  const hit = $(`${el.id}-hit`), tip = $(`${el.id}-tip`), xl = $(`${el.id}-x`), dot = $(`${el.id}-d`);
+  hit.addEventListener("mousemove", (ev) => {
+    const r = el.querySelector("svg").getBoundingClientRect();
+    const px = (ev.clientX - r.left) * W / r.width;
+    const i = Math.max(0, Math.min(pts.length - 1, Math.round((px - L) / (W - L - R) * (pts.length - 1))));
+    const p = pts[i]; xl.setAttribute("x1", x(i)); xl.setAttribute("x2", x(i)); xl.setAttribute("visibility", "visible");
+    if (p[key] !== null && p[key] !== undefined) { dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(p[key])); dot.setAttribute("visibility", "visible"); } else dot.setAttribute("visibility", "hidden");
+    tip.style.display = "block"; tip.innerHTML = `<b>${hhmm(p.t)}</b> · ${esc(fmt(p[key]))}<br><span class="muted">${p.n} answers</span>`;
+    const tx = x(i) * r.width / W; tip.style.left = Math.min(tx + 10, r.width - 130) + "px"; tip.style.top = "8px";
+  });
+  hit.addEventListener("mouseleave", () => { tip.style.display = "none"; xl.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); });
+}
+
+function ciBar(row, scaleMax) {
+  if (row.p100 === null) return "";
+  const W = 160, x = (v) => 4 + (W - 8) * v / scaleMax, c = versionColor(row.model_version);
+  return `<svg width="${W}" height="16" role="img" aria-label="${f(row.p100, 2)} per 100, interval ${f(row.ci[0], 1)} to ${f(row.ci[1], 1)}"><line x1="4" x2="${W - 4}" y1="8" y2="8" stroke="${css("--grid")}"/><line x1="${x(row.ci[0])}" x2="${x(row.ci[1])}" y1="8" y2="8" stroke="${c}" stroke-width="2" stroke-linecap="round"/><circle cx="${x(row.p100)}" cy="8" r="4" fill="${c}" stroke="${css("--surface")}" stroke-width="2"/></svg>`;
+}
+
+function render(s) {
+  $("status").className = "pill " + s.status; $("status").textContent = `${ICON[s.status]} ${s.status.toUpperCase()}`;
+  $("banner").innerHTML = s.store === "demo" ? `<span class="banner">DEMO DATA · synthetic fixture</span>` : `<span class="meta">store: <b>${esc(s.store)}</b></span>`;
+  $("meta").textContent = `${s.team} · updated ${hhmmss(s.now)} UTC`;
+  const L = s.light; const d = $("ldot");
+  d.className = "dot st-" + L.status; d.textContent = ICON[L.status];
+  $("lpct").textContent = `${L.status.toUpperCase()} · ${f(L.ok_pct, 1, " %")}`;
+  $("lsub").textContent = `${L.ok} of ${L.n} answers valid & on time, last 5 min · green needs > 90 %`;
+  $("alerts").innerHTML = s.alerts.length ? s.alerts.map((a) => `<li class="${a.level}"><div class="t">${ICON[a.level] || "i"} ${esc(a.title)}</div><div class="d">${esc(a.detail)} <a href="/runbook#${esc(a.runbook)}" target="_blank">RUNBOOK §${esc(a.runbook)}</a></div></li>`).join("") : `<li><div class="t">✓ Nothing to do</div><div class="d">All checks pass.</div></li>`;
+  const lat = s.latency_5m, c = s.conversion, hb = s.heartbeat;
+  const tiles = [
+    ["Requests / s", f(s.requests_per_s, 2), "last 60 s · nominal ≈ 3"],
+    ["Latency p50 / p95", `${f(lat.p50, 0)} / ${f(lat.p95, 0)}`, `ms · p99 ${f(lat.p99, 0)} · deadline 3000`],
+    [`Purchases / 100 (${WIN} min)`, f(c.p100, 2), `95 % ${f(c.ci[0], 2)}–${f(c.ci[1], 2)} · n=${c.n} served by us`],
+    ["Revenue / request", f(c.revenue_per_req, 2, " €"), `CTR ${f(c.ctr_pct, 1, " %")}`],
+    ["Heartbeat", ago(s.ages.heartbeat), hb ? `${esc(hb.role || "")} ${esc(hb.host || "")} ${esc(hb.model_version || "")}` : "no heartbeat rows"],
+    ["Last feedback", ago(s.ages.feedback), `last request ${ago(s.ages.request)}`],
+    ["New products", s.new_products, "added during the event"],
+  ];
+  $("tiles").innerHTML = tiles.map(([l, v, sub]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${sub}</div></div>`).join("");
+  lineChart($("c-ok"), s.series, "ok_pct", { fmt: (x) => f(x, 0, "%"), yMax: 100, refs: [{ y: 90, label: "light red ≤ 90", color: "--critical" }, { y: 98, label: "warn 98", color: "--warning" }] });
+  lineChart($("c-lat"), s.series, "p95", { fmt: (x) => f(x, 0), yMin: 0, refs: [{ y: 3000, label: "deadline 3000", color: "--critical" }] });
+  lineChart($("c-conv"), s.series, "p100_5m", { fmt: (x) => f(x, 1), yMin: 0 });
+
+  const vs = s.versions, mx = Math.max(1, ...vs.map((v) => v.ci[1]));
+  const seg = (o) => o.n ? `${f(o.p100, 2)} <span class="muted">n=${o.n}</span>` : `<span class="muted">–</span>`;
+  $("versions").innerHTML = `<thead><tr><th>model_version</th><th class="n">requests</th><th class="n">purchases/100</th><th>95 % interval (0–${f(mx, 0)})</th><th class="n">cold</th><th class="n">warm</th><th class="n">CTR %</th><th class="n">€/request</th></tr></thead><tbody>` +
+    vs.map((v) => `<tr><td><span class="sw" style="background:${versionColor(v.model_version)}"></span>${esc(v.model_version)}</td><td class="n">${v.n}</td><td class="n"><b>${f(v.p100, 2)}</b></td><td>${ciBar(v, mx)}</td><td class="n">${seg(v.cold)}</td><td class="n">${seg(v.warm)}</td><td class="n">${f(v.ctr_pct, 1)}</td><td class="n">${f(v.revenue_per_req, 2)}</td></tr>`).join("") +
+    `<tr><td><b>all served by us</b></td><td class="n">${c.n}</td><td class="n"><b>${f(c.p100, 2)}</b></td><td>${ciBar({ ...c, model_version: "(all)" }, mx)}</td><td class="n">${seg(s.segments.cold)}</td><td class="n">${seg(s.segments.warm)}</td><td class="n">${f(c.ctr_pct, 1)}</td><td class="n">${f(c.revenue_per_req, 2)}</td></tr></tbody>`;
+
+  const r5 = L.reasons, rw = s.reliability_window.reasons;
+  $("reasons").innerHTML = `<thead><tr><th>reason</th><th class="n">last 5 min</th><th class="n">last ${WIN} min</th><th>meaning</th></tr></thead><tbody>` +
+    [["missing", "no answer from us in time to be read"], ["late", "answer arrived after 3 s"], ["invalid", "out-of-stock / inactive / duplicate in the list"]]
+      .map(([k, m]) => `<tr><td>${k}</td><td class="n">${r5[k] ?? 0}</td><td class="n">${rw[k] ?? 0}</td><td class="muted">${m}</td></tr>`).join("") +
+    `<tr><td><b>valid &amp; on time</b></td><td class="n">${L.ok}/${L.n}</td><td class="n">${s.reliability_window.ok}/${s.reliability_window.n}</td><td class="muted">${f(s.reliability_window.ok_pct, 2, " %")} over the window</td></tr></tbody>`;
+
+  const tmax = Math.max(1, ...s.trends.map((t) => t.lift));
+  $("trends").innerHTML = s.trends.length ? `<thead><tr><th>subcategory</th><th class="n">views 5 min</th><th class="n">usual</th><th>lift</th></tr></thead><tbody>` +
+    s.trends.map((t) => `<tr><td>${esc(t.subcategory)}</td><td class="n">${t.views_recent}</td><td class="n">${f(t.views_base, 0)}</td><td><span class="lift" style="width:${(80 * t.lift / tmax).toFixed(0)}px"></span> ${f(t.lift, 2)}×</td></tr>`).join("") + "</tbody>" : `<tr><td class="muted">not enough organic events yet</td></tr>`;
+
+  $("feed").innerHTML = s.feed.map((q) => {
+    const ctx = q.context || {};
+    const outcome = q.purchased ? `<b style="color:var(--good-ink)">✓ purchased</b>` : q.clicked ? "clicked" : "no click";
+    const served = q.served_by === "team" ? `${esc(q.model_version || "")}` : `<b style="color:var(--critical)">fallback · ${esc(q.reason)}</b>`;
+    return `<div class="req"><div class="hd"><span>${hhmmss(q.ts)}</span><span>${esc(q.user_id || "?")}${q.is_new_user ? " · new shopper" : ""}</span>${q.cold ? `<span class="tag cold">cold</span>` : ""}<span>${esc(ctx.device || "")} · ${esc(ctx.region || "")} · ${esc(ctx.page || "")}</span><span>viewed: ${q.views.length ? q.views.map((v) => esc(v.subcategory || v.product_id)).join(", ") : "nothing"}</span><span>${served}</span><span>${f(q.latency_ms, 0)} ms</span><span>${outcome}</span></div>` +
+      `<div class="items">${q.shown.map((it, i) => `<span class="it ${it.product_id === q.purchased ? "buy" : it.product_id === q.clicked ? "click" : ""}"><b>${i + 1}</b> ${esc(it.subcategory || it.product_id)} <span class="muted">${f(it.price_eur, 0, "€")}</span> <span class="tg">${esc(it.tags.join(" · "))}</span></span>`).join("")}</div></div>`;
+  }).join("") || `<p class="muted">no feedback yet</p>`;
+
+  $("sqlnote").innerHTML = s.sql_live ? "Each panel's number is also computed by this SQL in RawTree every 20 s; results shown below the query." : "This store cannot run SQL (no RawTree key yet), so the queries are shown but <b>not executed</b>. They are validated offline on embedded ClickHouse (tests/test_dashboard_sql.py).";
+  $("sql").innerHTML = s.sql.map((q) => `<details><summary>${esc(q.title)}${q.ms != null ? ` <span class="muted">· ${q.ms} ms</span>` : ""}${q.error ? ` <span class="err">error</span>` : ""}</summary><pre>${esc(q.sql)}</pre>${q.error ? `<div class="err">${esc(q.error)}</div>` : ""}${q.rows && q.rows.length ? `<div class="scroll"><table><thead><tr>${Object.keys(q.rows[0]).map((k) => `<th>${esc(k)}</th>`).join("")}</tr></thead><tbody>${q.rows.slice(0, 8).map((r) => `<tr>${Object.values(r).map((v) => `<td>${esc(typeof v === "object" ? JSON.stringify(v) : v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : ""}</details>`).join("");
+}
+
+async function tick() {
+  try {
+    const r = await fetch(`/api/snapshot?window=${WIN}`, { cache: "no-store" });
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+  } catch (e) {
+    $("status").className = "pill critical"; $("status").textContent = "✕ DASHBOARD OFFLINE";
+    $("meta").textContent = "cannot reach the dashboard server: " + e;
+  }
+}
+document.querySelectorAll("#win button").forEach((b) => {
+  b.setAttribute("aria-pressed", String(Number(b.dataset.w) === WIN));
+  b.addEventListener("click", () => {
+    WIN = Number(b.dataset.w);
+    try { localStorage.setItem("rtrec.win", String(WIN)); } catch (e) {}
+    document.querySelectorAll("#win button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    tick();
+  });
+});
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>

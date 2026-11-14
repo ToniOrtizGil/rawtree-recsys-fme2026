@@ -79,3 +79,26 @@ def test_burst_is_cheap():
     t0 = time.perf_counter()
     live.on_catalog_updates(rows, s)
     assert time.perf_counter() - t0 < 1.0
+
+
+def test_any_arrival_order_gives_same_final_state():
+    import random
+    rng = random.Random(5)
+    rows = []
+    for i in range(3000):
+        pid = f"p{rng.randrange(20)}" if rng.random() < 0.9 else f"n{rng.randrange(5)}"
+        ch = rng.choice(["out_of_stock", "back_in_stock", "price_change", "price_change"])
+        if pid.startswith("n") and rng.random() < 0.3:
+            ch = "new_product"
+        rows.append(_upd(pid, f"2026-11-15T09:{i // 60 % 60:02d}:{i % 60:02d}.{rng.randrange(3)}Z", ch,
+                         price=float(rng.randrange(1, 50))))
+    ref = _state()
+    live.on_catalog_updates(sorted(rows, key=lambda r: r["ts"]), ref)
+    for _ in range(5):
+        s = _state()
+        shuffled = rows[:] + rng.sample(rows, 300)          # out of order + duplicates
+        rng.shuffle(shuffled)
+        for i in range(0, len(shuffled), 97):
+            live.on_catalog_updates(shuffled[i:i + 97], s)
+        assert s.available == ref.available and s.new_products == ref.new_products
+        assert {p: r["price_eur"] for p, r in s.catalog.items()} == {p: r["price_eur"] for p, r in ref.catalog.items()}

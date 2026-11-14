@@ -1,4 +1,10 @@
-"""Catalogue, price and stock tracker: keeps `state.catalog`, `state.available`, `state.new_products` exact.
+"""Catalogue, price and stock tracker.
+
+Two modes. Under A1's runtime (`owner=False`, the production setup) A1's
+rtrec/runtime/catalog.py is the single writer of `state.catalog` / `available` / `new_products`, and
+this tracker only derives live features from the same rows (price history, stock history, new
+product timestamps). Standalone (`owner=True`: bench, replays, tests) it also writes the contract
+fields, with the semantics below.
 
 Why it matters: one out-of-stock or inactive id invalidates a whole answer (fallback, lost reliability
 and conversion). So the tracker is conservative:
@@ -49,6 +55,7 @@ class _ProdState:
 
 @dataclass
 class CatalogTracker:
+    owner: bool = True        # write state.catalog / available / new_products (False under A1's runtime)
     prods: dict[str, _ProdState] = field(default_factory=dict)
     new_at: dict[str, float] = field(default_factory=dict)        # new product -> creation ts
     oos_at: dict[str, float] = field(default_factory=dict)        # currently out of stock -> since
@@ -68,7 +75,8 @@ class CatalogTracker:
             row["product_id"] = pid
             row["is_active"] = _as_bool(row.get("is_active", True))
             row["price_eur"] = float(row.get("price_eur") or 0.0)
-            state.catalog[pid] = row
+            if self.owner:
+                state.catalog[pid] = row
             self.prods.setdefault(pid, _ProdState())
             pr = row["price_eur"]
             price.setdefault(pid, PriceInfo(pr, pr, pr, 0.0))
@@ -97,7 +105,8 @@ class CatalogTracker:
                 row["product_id"] = pid
                 row["is_active"] = _as_bool(row.get("is_active", True))
                 row["price_eur"] = float(row.get("price_eur") or 0.0)
-                state.catalog[pid] = row
+                if self.owner:
+                    state.catalog[pid] = row
                 ps.row_ts, ps.row_prio = t, prio
                 new_price = row["price_eur"]
                 pi = price.get(pid)
@@ -132,11 +141,12 @@ class CatalogTracker:
 
     def _publish(self, state: State) -> None:
         """Swap in fresh immutable sets (atomic for readers on other threads)."""
-        cat = state.catalog
-        state.available = frozenset(
-            pid for pid, ps in self.prods.items()
-            if ps.in_stock and (row := cat.get(pid)) is not None and row.get("is_active", True))
-        state.new_products = frozenset(self.new_at)
+        if self.owner:
+            cat = state.catalog
+            state.available = frozenset(
+                pid for pid, ps in self.prods.items()
+                if ps.in_stock and (row := cat.get(pid)) is not None and row.get("is_active", True))
+            state.new_products = frozenset(self.new_at)
         live = state.live
         live["new_product_ts"] = dict(self.new_at)
         live["oos_since"] = dict(self.oos_at)

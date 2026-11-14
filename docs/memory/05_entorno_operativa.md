@@ -49,3 +49,18 @@
 
 - Sesión iniciada 14-nov 11:10 UTC (12:10 CET). La práctica lleva abierta desde las 10:00 CET.
 - Final: 15-nov 09:00–11:00 UTC (10:00–12:00 CET). Congelación de código prevista 08:00 UTC.
+
+## Decisiones de integración (máster)
+
+- 14-nov 12:52 CET — **Un solo hilo de servicio es dueño del `State`** (diseño de A1): aplica las actualizaciones de catálogo justo antes de cada lote y ejecuta los hooks entre lotes, así que no hacen falta locks. El `CatalogTracker` de A1 (`rtrec/runtime/catalog.py`) es el **único escritor** de `state.catalog`, `state.available` y `state.new_products`. A4 solo escribe features derivadas en `state.live` y se engancha mediante `rtrec/live/hook.py:LiveHook` (hooks `on_start`, `on_catalog_updates`, `on_events`, `on_feedback`, `on_served`, `on_tick`). Sustituye a la decisión de las 12:46 (stock en A4).
+- Promoción a producción: `scripts/arbiter.py` (ver `docs/TASKS.md`).
+- Fuga de fiabilidad conocida: productos que se agotan entre nuestra respuesta y la evaluación del organizador (~1 % en el simulador de A1). Lo mide el test de carga de A1.
+
+## Acceso real a RawTree (14-nov 13:25 CET)
+
+- **TEAM_ID = `team_36`.** La API key está guardada en el entorno Default (formulario seguro de Claude Code); un proxy la inyecta en las llamadas a `api.rawtree.com`. **No está en ningún archivo ni en el repo.** El código se ejecuta con `RAWTREE_API_KEY=proxy-injected`. La clave se pegó dos veces en el chat: tratarla como expuesta y pedir su anulación al terminar el evento.
+- Lección: la primera copia guardada daba 401 aunque la clave valía (desde PowerShell del usuario daba otro código, 500 en `SELECT 1` sin base). Se volvió a guardar y funcionó. Probar siempre con `SELECT count() FROM shop.catalog` (debe dar 5000) pasando `?database=team_36`.
+- Volúmenes reales a las 12:24 UTC: catalog 5.000 · history_sessions 2.000.000 · history_events 11.996.560 · requests 36.703 (desde 09:00 UTC, ~3/s) · events 814.081 · catalog_updates 930 (620 price_change, 123 out_of_stock, 87 back_in_stock, 100 new_product).
+- Formato real de `shop.requests`: `context.device`, `context.page`, `context.region` salen como columnas aplanadas; `recent_views` = array de `{product_id, ts}` con `ts` tipo `2026-11-14 12:23:47.880000000`.
+- **Baseline real (feedback de la organización a `team_36` sin responder): conversión 1,14 %** (34 compras en 2.993 peticiones; `served_by=fallback`, `fallback_reason=missing`). El simulador daba ~2,4 %: calibrado alto en nivel absoluto.
+- Reglas de escritura: **solo A1 escribe** en `team_36.submissions`/`scratch`; todos los demás, solo lectura. Los límites de consulta son compartidos con todos los equipos: pocas consultas en paralelo.

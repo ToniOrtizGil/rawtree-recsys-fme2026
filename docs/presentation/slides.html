@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>From best sellers to a system that learns</title>
+<!--
+  5-slide deck for the jury (product-manager audience). Open in any browser: ← → or space to move, P to print/PDF.
+  Every ⟨…⟩ is a number to fill from a named source on Sunday (see docs/presentation/README.md). Never invent one.
+  Talk track and demo steps: docs/presentation/demo_script.md
+-->
+<style>
+:root { --bg: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781; --line: #e1e0d9;
+        --blue: #2a78d6; --blue-wash: #e6f0fb; --good: #0ca30c; --critical: #d03b3b; --todo: #fff3cd; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #e9e8e3; color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+.slide { width: min(100vw, 177.78vh); aspect-ratio: 16 / 9; margin: 0 auto; background: var(--bg); position: relative;
+         padding: 4.5% 6%; display: none; flex-direction: column; overflow: hidden; font-size: min(1.42vw, 2.53vh); }
+.slide.on { display: flex; }
+.kicker { color: var(--blue); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; font-size: .75em; }
+h1 { font-size: 2em; line-height: 1.1; margin: .25em 0 .5em; }
+h2 { font-size: 1.05em; margin: 0 0 .3em; }
+p, li { line-height: 1.35; } ul { margin: .2em 0; padding-left: 1.1em; } li { margin: .25em 0; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 4%; flex: 1; min-height: 0; }
+.cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3%; }
+.box { border: 1px solid var(--line); border-radius: .5em; padding: .7em .9em; background: #fff; }
+.big { font-size: 2.2em; font-weight: 700; line-height: 1.1; margin: .3em 0 .1em; }
+.muted { color: var(--muted); } .ink2 { color: var(--ink-2); }
+.todo { background: var(--todo); padding: 0 .25em; border-radius: .2em; font-weight: 600; }
+.foot { position: absolute; left: 6%; right: 6%; bottom: 3%; display: flex; justify-content: space-between; color: var(--muted); font-size: .6em; }
+svg { width: 100%; height: auto; }
+.svgtext { font: 600 13px system-ui, sans-serif; fill: var(--ink); } .svgsub { font: 11px system-ui, sans-serif; fill: var(--ink-2); }
+.nav { position: fixed; bottom: 8px; right: 12px; font-size: 12px; color: var(--ink-2); }
+@media print { html, body { background: #fff; } .slide { display: flex !important; width: 100%; page-break-after: always; break-after: page; }
+               .nav { display: none; } @page { size: 16in 9in; margin: 0; } }
+</style>
+</head>
+<body>
+
+<!-- 1 ─────────────────────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="kicker">The problem</div>
+  <h1>Every 0.3 s a shopper arrives.<br>We have 3 seconds to choose the 10 products they see.</h1>
+  <div class="cols">
+    <div>
+      <h2>Today: everyone sees the same best sellers</h2>
+      <ul>
+        <li>A first-time visitor looking at running shoes gets the same carousel as a returning customer browsing garden tools.</li>
+        <li>The list never reacts: not to a product that is suddenly trending, a price drop, or a product launched an hour ago.</li>
+        <li>And if one listed product is out of stock, the whole answer is thrown away.</li>
+      </ul>
+      <h2 style="margin-top:.8em">What success means</h2>
+      <p class="ink2">More purchases per 100 shoppers than the best-seller list, measured against the best list a perfect
+        system could pick for each shopper: <b>0 = best sellers, 100 = perfect.</b> Answers must be valid and on time;
+        a late answer is replaced by the best sellers.</p>
+    </div>
+    <div class="box" style="align-self:start">
+      <div class="muted" style="font-size:.75em">HOW THE 100 POINTS ARE SPLIT</div>
+      <svg viewBox="0 0 320 140" role="img" aria-label="Score split: conversion 50, cold start 10, reliability 10, jury 30">
+        <g transform="translate(0,10)">
+          <rect x="0" y="0" width="160" height="26" rx="4" fill="#2a78d6"/><text x="168" y="18" class="svgtext">50 conversion</text>
+          <rect x="0" y="36" width="32" height="26" rx="4" fill="#2a78d6" opacity=".75"/><text x="40" y="54" class="svgtext">10 new shoppers &amp; products</text>
+          <rect x="0" y="72" width="32" height="26" rx="4" fill="#2a78d6" opacity=".55"/><text x="40" y="90" class="svgtext">10 reliability</text>
+          <rect x="0" y="108" width="96" height="26" rx="4" fill="#898781"/><text x="104" y="126" class="svgtext">30 jury (this talk)</text>
+        </g>
+      </svg>
+      <p class="ink2" style="margin:.2em 0 0;font-size:.85em">Scored only in the 2-hour final, on new shoppers, new products and new trends.</p>
+    </div>
+  </div>
+  <div class="foot"><span>rtrec · Datathon FME 2026 · RawTree challenge</span><span>1 / 5</span></div>
+</section>
+
+<!-- 2 ─────────────────────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="kicker">What we built</div>
+  <h1>A recommender that reads the session, ranks by purchase probability, and never misses a deadline</h1>
+  <svg viewBox="0 0 960 200" role="img" aria-label="Pipeline from shop requests to submissions">
+    <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#898781"/></marker></defs>
+    <g>
+      <rect x="0" y="40" width="180" height="70" rx="8" fill="#fff" stroke="#e1e0d9"/><text x="90.0" y="70" text-anchor="middle" class="svgtext">Shopper arrives</text><text x="90.0" y="90" text-anchor="middle" class="svgsub">device · region · page · views</text>
+      <rect x="195" y="40" width="180" height="70" rx="8" fill="#fff" stroke="#e1e0d9"/><text x="285.0" y="70" text-anchor="middle" class="svgtext">~300 candidates</text><text x="285.0" y="90" text-anchor="middle" class="svgsub">viewed · similar · trending · new</text>
+      <rect x="390" y="40" width="180" height="70" rx="8" fill="#e6f0fb" stroke="#2a78d6"/><text x="480.0" y="70" text-anchor="middle" class="svgtext">Rank by P(purchase)</text><text x="480.0" y="90" text-anchor="middle" class="svgsub">learned from 2 M impressions</text>
+      <rect x="585" y="40" width="180" height="70" rx="8" fill="#fff" stroke="#e1e0d9"/><text x="675.0" y="70" text-anchor="middle" class="svgtext">Safety check</text><text x="675.0" y="90" text-anchor="middle" class="svgsub">10 distinct, in stock</text>
+      <rect x="780" y="40" width="180" height="70" rx="8" fill="#fff" stroke="#e1e0d9"/><text x="870.0" y="70" text-anchor="middle" class="svgtext">Answer in &lt; 3 s</text><text x="870.0" y="90" text-anchor="middle" class="svgsub">batched write to RawTree</text>
+      <path d="M180,75 H191 M375,75 H386 M570,75 H581 M765,75 H776" stroke="#898781" stroke-width="2" marker-end="url(#ar)"/>
+      <rect x="195" y="140" width="570" height="46" rx="8" fill="#f9f9f7" stroke="#e1e0d9"/>
+      <text x="480.0" y="160" text-anchor="middle" class="svgtext">Live memory, updated every second from the stream</text>
+      <text x="480.0" y="178" text-anchor="middle" class="svgsub">trends · prices · stock · what each shopper just did · how our own answers converted</text>
+      <path d="M480.0,140 V114" stroke="#898781" stroke-width="2" marker-end="url(#ar)"/>
+    </g>
+  </svg>
+  <div class="cols3" style="margin-top:.6em">
+    <div class="box"><h2>Generalises</h2><p class="ink2">The model never memorises product or shopper IDs. It learns <i>relationships</i> (same category as what you viewed, price you usually pay, trending now), so it works for shoppers and products it has never seen, which is what the final is.</p></div>
+    <div class="box"><h2>Fast by design</h2><p class="ink2">No database query on the critical path: everything a request needs is already in memory. The database is read in the background.</p></div>
+    <div class="box"><h2>Cannot fail silently</h2><p class="ink2">Three safety nets: full model → simple session rules → safe best-seller list. A standby machine takes over if the main one stops sending heartbeats.</p></div>
+  </div>
+  <div class="foot"><span>Code: rtrec/runtime (serving) · rtrec/model (ranking) · rtrec/validate.py (safety check)</span><span>2 / 5</span></div>
+</section>
+
+<!-- 3 ─────────────────────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="kicker">Method · how we knew before going live</div>
+  <h1>Nothing reached shoppers without first winning offline, then winning live</h1>
+  <div class="cols">
+    <div>
+      <h2>1 · Learn from the old system's log</h2>
+      <p class="ink2">60 days, 2 M carousel impressions with clicks and purchases. The old system showed mostly popular items, so the log is biased. We correct for that with the recorded <i>propensities</i> (how likely each item was to be shown), so we can estimate how a <i>new</i> list would have done.</p>
+      <h2>2 · Check the checker</h2>
+      <p class="ink2">We built a simulated shop where the true purchase probability is known, and verified that our offline estimate recovers it before trusting it on real data.</p>
+      <h2>3 · One promotion rule</h2>
+      <p class="ink2">A version goes live only if it beats the current one on the same replay, without hurting new shoppers, with zero errors and p99 latency under 1.8 s. Live, it must win an A/B test with 95 % confidence.</p>
+    </div>
+    <div class="box" style="align-self:start">
+      <div class="muted" style="font-size:.75em">OFFLINE SCORE (0 = BEST SELLERS, 100 = PERFECT)</div>
+      <table style="width:100%;border-collapse:collapse;margin-top:.4em;font-variant-numeric:tabular-nums">
+        <tr class="muted" style="font-size:.75em"><td>version</td><td style="text-align:right">all</td><td style="text-align:right">new shoppers / products</td></tr>
+        <tr><td>v0 best sellers</td><td style="text-align:right">0</td><td style="text-align:right">0</td></tr>
+        <tr><td>v1 session rules</td><td style="text-align:right"><span class="todo">⟨A3⟩</span></td><td style="text-align:right"><span class="todo">⟨A3⟩</span></td></tr>
+        <tr><td>v2 ranker</td><td style="text-align:right"><span class="todo">⟨A3⟩</span></td><td style="text-align:right"><span class="todo">⟨A3⟩</span></td></tr>
+        <tr><td><b>final</b> (+ live learning)</td><td style="text-align:right"><span class="todo">⟨arbiter⟩</span></td><td style="text-align:right"><span class="todo">⟨arbiter⟩</span></td></tr>
+      </table>
+      <p class="muted" style="font-size:.7em;margin-top:.6em">Source: scripts/arbiter.py on the simulator (same seed, fresh shop per version) and docs/MODEL.md (IPS / SNIPS / doubly-robust on history, with 95 % intervals).</p>
+    </div>
+  </div>
+  <div class="foot"><span>Code: rtrec/offline (estimators) · scripts/arbiter.py (promotion) · sim/ (simulated shop)</span><span>3 / 5</span></div>
+</section>
+
+<!-- 4 ─────────────────────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="kicker">Learning from the stream · using RawTree</div>
+  <h1>The shop changes every minute, and so does what we show</h1>
+  <div class="cols">
+    <div>
+      <ul>
+        <li><b>Trends:</b> every view, cart and purchase updates a "popular right now" score that forgets in minutes (8-minute half-life), so a product taking off moves up quickly.</li>
+        <li><b>Prices and stock:</b> applied within half a second. A sold-out product disappears from every list, and a price drop is a signal.</li>
+        <li><b>New shoppers:</b> what they view in this session is their whole history, used from the first click.</li>
+        <li><b>New products:</b> no sales yet, so they borrow the record of similar products (same subcategory, brand, price) until their own data arrives.</li>
+        <li><b>Our own results:</b> per-product calibration (did it sell as often as we predicted?), cheap exploration on slots 9–10 only, A/B tests with a promotion rule.</li>
+      </ul>
+    </div>
+    <div>
+      <div class="box">
+        <h2>RawTree is the system's memory and its monitor</h2>
+        <ul class="ink2">
+          <li><b>Features in SQL:</b> co-views, popularity by context, position bias and propensity-corrected conversion are computed inside RawTree over 12 M events (rtrec/sql).</li>
+          <li><b>Reads:</b> incremental cursors on requests, events, catalogue updates and feedback, with one persistent connection.</li>
+          <li><b>Writes:</b> batched answers every ~0.2 s, retried without ever duplicating. Heartbeats go to <code>scratch</code>, so the standby knows when to take over.</li>
+          <li><b>Monitoring:</b> every dashboard number also has a SQL version that runs in RawTree, and the two are checked against each other.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span>Code: rtrec/live (stream learning) · rtrec/sql (features) · dashboard/queries.py (monitoring SQL)</span><span>4 / 5</span></div>
+</section>
+
+<!-- 5 ─────────────────────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="kicker">Results · live demo</div>
+  <h1>Two hours, ⟨21,600⟩ shoppers, unattended</h1>
+  <div class="cols3">
+    <div class="box"><div class="muted" style="font-size:.75em">ANSWERED VALID &amp; ON TIME</div><div class="big"><span class="todo">⟨99.x %⟩</span></div><p class="ink2">green light all final · p95 latency <span class="todo">⟨…⟩</span> ms (limit 3,000)</p></div>
+    <div class="box"><div class="muted" style="font-size:.75em">PURCHASES PER 100 SHOPPERS</div><div class="big"><span class="todo">⟨x.x⟩</span></div><p class="ink2">vs <span class="todo">⟨y.y⟩</span> when the best-seller fallback served · 95 % interval <span class="todo">⟨…⟩</span></p></div>
+    <div class="box"><div class="muted" style="font-size:.75em">NEW SHOPPERS &amp; PRODUCTS</div><div class="big"><span class="todo">⟨x.x⟩</span></div><p class="ink2">purchases per 100 cold requests (<span class="todo">⟨n⟩</span> of them) vs <span class="todo">⟨…⟩</span> warm</p></div>
+  </div>
+  <div class="cols" style="margin-top:.8em">
+    <div><h2>What we learned</h2><ul class="ink2">
+      <li><span class="todo">⟨one sentence from the forensics: e.g. what drives a click⟩</span></li>
+      <li><span class="todo">⟨one sentence from the A/B tests during practice⟩</span></li>
+      <li>Reliability is worth designing first: every missed answer scores zero.</li></ul></div>
+    <div><h2>Next, with more time</h2><ul class="ink2">
+      <li>Text embeddings of descriptions for brand-new products.</li>
+      <li>Retrain the ranker continuously on our own feedback.</li>
+      <li>Price sensitivity per device and region as a first-class signal.</li></ul></div>
+  </div>
+  <div class="foot"><span>Numbers: dashboard (3 h window) captured 12:05 · organisers' final ranking</span><span>5 / 5</span></div>
+</section>
+
+<div class="nav" id="nav"></div>
+<script>
+const S = [...document.querySelectorAll(".slide")];
+let i = Math.max(0, Math.min(S.length - 1, (parseInt(location.hash.slice(1), 10) || 1) - 1));
+function show() { S.forEach((s, k) => s.classList.toggle("on", k === i)); document.getElementById("nav").textContent = "← → · P print"; history.replaceState(null, "", "#" + (i + 1)); }
+addEventListener("keydown", (e) => {
+  if (["ArrowRight", "PageDown", " "].includes(e.key)) { i = Math.min(S.length - 1, i + 1); show(); e.preventDefault(); }
+  if (["ArrowLeft", "PageUp"].includes(e.key)) { i = Math.max(0, i - 1); show(); }
+  if (e.key === "p" || e.key === "P") print();
+});
+addEventListener("click", (e) => { if (e.target.closest("a")) return; i = e.clientX > innerWidth / 2 ? Math.min(S.length - 1, i + 1) : Math.max(0, i - 1); show(); });
+show();
+</script>
+</body>
+</html>

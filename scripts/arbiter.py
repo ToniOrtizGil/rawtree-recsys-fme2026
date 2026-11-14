@@ -97,6 +97,8 @@ def run(policy_factory, sim, warmup_s: float, eval_s: float, start: float, step:
     dump = sim.history()
     state = State()
     live.init(state, dump.catalog)
+    if hasattr(live, "seed_history"):   # long-run shares for group-trend lifts (A4)
+        live.seed_history(state, dump.history_events)
     ranking = best_sellers(dump.history_events)
     state.safe_list = ranking[:200]
     baseline = BestSellerPolicy(ranking)
@@ -165,12 +167,13 @@ def main() -> None:
     ap.add_argument("policies", nargs="+", help="module:Class, e.g. rtrec.model.policies:RankerPolicy")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--warmup-min", type=float, default=10)
+    ap.add_argument("--config", default="default", help="simulator preset: default | alt | small")
     ap.add_argument("--minutes", type=float, default=20, help="scored window (final round = 120)")
     args = ap.parse_args()
     from sim.shop import make_simulator  # A2
     for spec in args.policies:
-        sim = make_simulator(seed=args.seed)
-        start = getattr(sim, "start_ts", time.time())
+        sim = make_simulator(args.seed, args.config)
+        start = getattr(sim, "stream_start", None) or getattr(sim, "start_ts")
         rep = run(load(spec), sim, args.warmup_min * 60, args.minutes * 60, start)
         print(json.dumps(rep.as_dict()))
 

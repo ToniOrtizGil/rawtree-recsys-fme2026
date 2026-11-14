@@ -14,9 +14,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "jupyter"]
+sql = ["chdb>=4.0"]      # embedded ClickHouse: runs rtrec/sql and dashboard SQL offline (tests skip without it)
+sqltest = ["chdb>=4.0"]  # alias kept for A5's docs
 
 [tool.setuptools.packages.find]
-include = ["rtrec*", "sim*"]
+include = ["rtrec*", "sim*", "dashboard*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
