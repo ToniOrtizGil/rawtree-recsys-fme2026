@@ -14,9 +14,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "jupyter"]
+sqltest = ["chdb>=4.0"]   # embedded ClickHouse: validates dashboard SQL offline (tests skip without it)
 
 [tool.setuptools.packages.find]
-include = ["rtrec*", "sim*"]
+include = ["rtrec*", "sim*", "dashboard*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
