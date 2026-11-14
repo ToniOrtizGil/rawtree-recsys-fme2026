@@ -268,31 +268,47 @@ class Forensics:
 
     # -------------------------------------------------------------- H9
     def h9_propensity(self) -> Finding:
+        """Is the log a Plackett-Luce draw (p_k = w_k / (W - sum of w above))? Over which candidate pool?"""
         p = self.pairs
         day = (p.t // 86400).astype(int)
         p1 = p[p.slot == 0].assign(day=day[p.slot == 0]).groupby(["day", "product_id"]).propensity.median()
-        # Plackett-Luce check: p_k == w_k / (W - sum_{j<k} w_j)  <=>  p_k == p1_k / (1 - sum_{j<k} p1_j)
+        # PL check: p_k == p1_k / (1 - sum_{j<k} p1_j), with p1 = slot-1 propensity of the same product that day
         key = pd.MultiIndex.from_arrays([day, p.product_id])
-        p1_each = p1.reindex(key).to_numpy()
-        P1 = p1_each.reshape(-1, 10)
+        P1 = p1.reindex(key).to_numpy().reshape(-1, 10)
         prev = np.concatenate([np.zeros((len(P1), 1)), np.nancumsum(P1, 1)[:, :-1]], 1)
         known_prev = np.concatenate([np.ones((len(P1), 1), bool), np.cumprod(~np.isnan(P1), 1)[:, :-1].astype(bool)], 1)
-        pred = P1 / (1 - prev)
-        act = p.propensity.to_numpy().reshape(-1, 10)
-        ok = known_prev & ~np.isnan(pred)
-        rel = np.abs(pred[ok] / act[ok] - 1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pred = P1 / (1 - prev)
+            act = p.propensity.to_numpy().reshape(-1, 10)
+            rel = np.abs(pred / act - 1)[known_prev & np.isfinite(pred) & (act > 0)]
+        rel = rel[np.isfinite(rel)]
+        med = float(np.median(rel)) if len(rel) else float("nan")
+        # candidate pool: slot-1 propensities summed per (day, category) ~ 1 means "one pool per category"
+        cats = self.cat.category.reindex(p.product_id).to_numpy()
+        one_cat = float((pd.Series(cats).groupby(np.repeat(np.arange(len(P1)), 10)).nunique() == 1).mean())
+        p1c = p[p.slot == 0].assign(day=day[p.slot == 0], cat=cats[p.slot.to_numpy() == 0]) \
+            .groupby(["day", "cat", "product_id"]).propensity.first()
+        pool_day = float(p1.groupby("day").sum().median())
+        pool_cat = float(p1c.groupby(["day", "cat"]).sum().median())
+        last = self.sessions.recent_views.map(lambda v: v[-1]["product_id"] if len(v) else None)
+        has = last.notna().to_numpy()
+        same_last = float((self.cat.category.reindex(last[has]).to_numpy() == cats.reshape(-1, 10)[has, 0]).mean()) if has.any() else float("nan")
         q = np.quantile(act, [0.0, 0.01, 0.5, 0.99])
         tab = pd.DataFrame({"min": [q[0]], "p01": [q[1]], "median": [q[2]], "p99": [q[3]],
-                            "share_below_1e-3": [(act < 1e-3).mean()],
-                            "pl_check_pairs": [int(ok.sum())], "pl_median_rel_error": [float(np.median(rel)) if len(rel) else np.nan],
-                            "slot1_top_product_propensity": [float(p1.max())]})
-        pl = len(rel) and np.median(rel) < 0.02
+                            "share_below_1e-3": [(act < 1e-3).mean()], "pl_check_pairs": [len(rel)],
+                            "pl_median_rel_error": [med], "slot1_sum_per_day": [pool_day],
+                            "slot1_sum_per_day_category": [pool_cat], "single_category_lists": [one_cat],
+                            "category_is_last_viewed": [same_last]})
+        pl = med < 0.02
+        pool = ("one candidate pool per (day, category): all 10 items share a category"
+                f" in {one_cat:.0%} of impressions, and it is the last viewed product's category in {same_last:.0%}"
+                if one_cat > 0.95 else "one candidate pool per day (whole catalogue)")
         return Finding("H9 Structure of `propensity`",
-                       ("Consistent with a Plackett-Luce draw over a per-day weight vector "
-                        f"(slot-k propensity predicted from slot-1 propensities with median error {np.median(rel):.1%}), "
-                        if pl else f"NOT a simple per-day Plackett-Luce (median error {np.median(rel) if len(rel) else float('nan'):.1%}); ")
-                       + f"median propensity {q[2]:.4f}, {tab['share_below_1e-3'][0]:.0%} below 1e-3 (IPS weights > 1000: "
-                         "clip or use SNIPS / per-slot estimators).", tab, tab.iloc[0].to_dict())
+                       (f"Plackett-Luce (slot-k propensity predicted from slot-1 propensities, median error {med:.1%}); "
+                        if pl else f"NOT Plackett-Luce over fixed daily weights (median error {med:.1%}); ")
+                       + pool + f". Median propensity {q[2]:.4f}, {tab['share_below_1e-3'][0]:.0%} below 1e-3. "
+                         "IPS has no support outside the logged pool: clip, use SNIPS / per-slot estimators.",
+                       tab, tab.iloc[0].to_dict())
 
 
 def _logit_slope(x: np.ndarray, y: np.ndarray, iters: int = 25) -> float:
