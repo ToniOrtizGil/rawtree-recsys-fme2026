@@ -52,3 +52,18 @@ def test_ips_snips_dr_unbiased_on_item_position_model():
 def test_hit_rate():
     hr, n = est.hit_rate([["a", "b"], ["c"]], ["a", None])
     assert hr == 1.0 and n == 1
+
+
+def test_estimator_check_runs_on_toy():
+    from rtrec.model.policies import BaselinePolicy, SessionHeuristicPolicy
+    from rtrec.offline.estimator_check import PopularityLogger, check
+    from rtrec.offline.replay import state_from_history
+    from rtrec.offline.toysim import make_simulator
+    sim = make_simulator(seed=4, n_products=150, n_users=80)
+    d = sim.history(days=5, sessions_per_day=100)
+    state, feed = state_from_history(d.catalog, d.history_sessions, d.history_events)
+    rep = check(sim, state, feed, [BaselinePolicy(), SessionHeuristicPolicy()],
+                PopularityLogger(state.offline["best_sellers"], seed=1), minutes=1.0)
+    assert rep["n"] > 50
+    for r in rep["policies"].values():
+        assert np.isfinite(r["truth"]) and r["matches"] >= 0
