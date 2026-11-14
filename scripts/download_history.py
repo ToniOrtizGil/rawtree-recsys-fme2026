@@ -16,8 +16,8 @@ Why it looks like this:
   If that column is unavailable, `--columns` switches to explicit casted columns.
 - Resumable: a day whose Parquet file exists is skipped, so a crash or a 429 storm costs nothing.
 
-STATUS: written against the documented API (docs/memory/03_rawtree_api_sql.md); tested only
-offline with a fake transport (tests/test_data_download.py). NOT yet run against api.rawtree.com.
+STATUS: validated against api.rawtree.com on 2026-11-14 (full 60-day history downloaded); also
+tested offline with a fake transport (tests/test_data_download.py).
 """
 from __future__ import annotations
 
@@ -91,13 +91,42 @@ def http_query(key: str, base: str = API, max_tries: int = 6) -> Callable[[str],
     return query
 
 
-def _rows(raw: list[dict], use_raw: bool) -> list[dict]:
-    if not use_raw:
-        return raw
+# Columns every row of a table must have: __raw_data omits keys whose value was null (e.g. no click).
+REQUIRED = {
+    "history_sessions": ("request_id", "ts", "user_id", "context", "recent_views", "shown", "propensity",
+                         "clicked", "purchased", "revenue_eur"),
+    "history_events": ("ts", "event_type", "user_id", "session_id", "product_id", "price_eur", "device", "region"),
+}
+
+
+def iso_ms(v):
+    """RawTree returns '2026-09-15 07:00:01.456000000'; we store '2026-09-15T07:00:01.456Z' (same as sim/),
+    so string comparisons and day partitions behave identically on real and synthetic data."""
+    if not isinstance(v, str) or len(v) < 19:
+        return v
+    if v.endswith("Z") and "T" in v:
+        return v
+    date, _, time_ = v.replace("T", " ").rstrip("Z").partition(" ")
+    hms, _, frac = time_.partition(".")
+    return f"{date}T{hms}.{(frac + '000')[:3]}Z"
+
+
+def normalize(row: dict, table: str | None = None) -> dict:
+    for k in ("ts", "created_at"):
+        if k in row:
+            row[k] = iso_ms(row[k])
+    if isinstance(row.get("recent_views"), list):
+        row["recent_views"] = [{**v, "ts": iso_ms(v.get("ts"))} for v in row["recent_views"]]
+    for k in REQUIRED.get(table, ()):
+        row.setdefault(k, None)
+    return row
+
+
+def _rows(raw: list[dict], use_raw: bool, table: str | None = None) -> list[dict]:
     out = []
     for r in raw:
-        v = r["__raw_data"]
-        out.append(json.loads(v) if isinstance(v, str) else v)
+        v = r["__raw_data"] if use_raw else r
+        out.append(normalize(json.loads(v) if isinstance(v, str) else dict(v), table))
     return out
 
 
@@ -114,7 +143,7 @@ def fetch_window(query, table: str, t0: datetime, t1: datetime, use_raw: bool, d
            f"WHERE ts::DateTime64(3) >= toDateTime64('{_fmt(t0)}', 3, 'UTC') "
            f"AND ts::DateTime64(3) < toDateTime64('{_fmt(t1)}', 3, 'UTC')")
     try:
-        return _rows(query(sql), use_raw)
+        return _rows(query(sql), use_raw, table)
     except QueryError as e:
         # result too big (400/413) or too slow (408): split the window in halves, down to 15 minutes
         if e.status in (400, 408, 413) and (t1 - t0) > timedelta(minutes=15):
@@ -125,7 +154,7 @@ def fetch_window(query, table: str, t0: datetime, t1: datetime, use_raw: bool, d
 
 def ts_range(query, table: str, db: str = "shop") -> tuple[datetime, datetime]:
     r = query(f"SELECT toString(min(ts::DateTime64(3))) AS lo, toString(max(ts::DateTime64(3))) AS hi FROM {db}.{table}")[0]
-    parse = lambda s: datetime.fromisoformat(str(s).replace("Z", "")).replace(tzinfo=timezone.utc)
+    parse = lambda s: datetime.fromisoformat(str(s).replace("Z", "").replace("T", " ")[:23]).replace(tzinfo=timezone.utc)
     return parse(r["lo"]), parse(r["hi"])
 
 
