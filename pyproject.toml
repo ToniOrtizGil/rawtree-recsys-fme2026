@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "jupyter"]
+sql = ["chdb>=3"]   # embedded ClickHouse: runs rtrec/sql offline (tests skip without it)
 
 [tool.setuptools.packages.find]
 include = ["rtrec*", "sim*"]
