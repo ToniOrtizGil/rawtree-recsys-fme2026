@@ -7,7 +7,7 @@ Two instances can run on two machines against the same team database:
     standby goes quiet again.
 
 Clock skew between machines does not matter: the standby never compares the primary's timestamps
-with its own clock; it only notes, on its own clock, when the primary's sequence number last moved.
+with its own clock; it only notes, on its own clock, when the primary's latest heartbeat ts last moved.
 During a hand-over both may answer the same request for a moment; both answers are valid and only
 one counts, so the overlap is harmless (a gap would not be).
 """
@@ -37,25 +37,24 @@ class Heartbeat:
         self.lookback_s = lookback_s
         self.seq = 0
         self.started = clock.now()
-        self._primary_seq: dict[str, int] = {}
-        self._primary_seen_at: float | None = None   # our clock, last time a primary seq moved
+        self._primary_ts: dict[str, str] = {}
+        self._primary_seen_at: float | None = None   # our clock, last time a primary heartbeat ts moved
         self.active = role == "primary"
         self.takeovers = 0
         self.model_version = model_version or (lambda: "")
 
-    def beat(self, extra: dict | None = None) -> None:
+    def beat(self) -> None:
         self.seq += 1
         now = self.clock.now()
-        # protocol fields (rtrec/store.py): kind, ts, role, host, model_version; the rest is ours
-        row = {"kind": "heartbeat", "ts": to_iso(now), "role": self.role, "host": socket.gethostname(),
-               "model_version": self.model_version(), "instance": self.instance, "active": self.active,
-               "seq": self.seq, "ts_epoch": now}
-        row.update(extra or {})
+        # exactly the protocol's fields (rtrec/store.py; A5's dashboard and alerts read them).
+        # `host` carries hostname-pid so two processes on one machine stay distinguishable.
+        row = {"kind": "heartbeat", "ts": to_iso(now), "role": self.role, "host": self.instance,
+               "model_version": self.model_version()}
         self.store.insert_scratch([row])
 
     def _read(self) -> list[dict]:
         # the cursor uses our clock against the primary's ts: a generous lookback absorbs any skew,
-        # and the decision itself only looks at sequence numbers
+        # and the decision itself only looks at whether that ts changed
         return self.store.scratch_since(self.clock.now() - self.lookback_s, kind="heartbeat")
 
     def check(self) -> bool:
@@ -63,16 +62,16 @@ class Heartbeat:
         if self.role == "primary":
             return False
         now = self.clock.now()
-        latest: dict[str, int] = {}
+        latest: dict[str, str] = {}      # primary host -> newest ts string (ISO sorts like time)
         for r in self._read():
-            if r.get("role") != "primary" or r.get("instance") == self.instance:
+            if r.get("role") != "primary" or r.get("host") == self.instance:
                 continue
-            inst, seq = str(r.get("instance")), int(r.get("seq", 0))
-            latest[inst] = max(seq, latest.get(inst, seq))
-        for inst, seq in latest.items():
-            if seq != self._primary_seq.get(inst):
+            host, ts = str(r.get("host")), str(r.get("ts"))
+            latest[host] = max(ts, latest.get(host, ts))
+        for host, ts in latest.items():
+            if ts != self._primary_ts.get(host):   # it moved: the primary is alive (no clock comparison)
                 self._primary_seen_at = now
-                self._primary_seq[inst] = seq
+                self._primary_ts[host] = ts
         # never seen a primary: wait one takeover period after our own start, then serve
         ref = self._primary_seen_at if self._primary_seen_at is not None else self.started
         should = now - ref > self.takeover_after_s

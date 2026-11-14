@@ -20,7 +20,7 @@ from rtrec.stores.stub_sim import StubParams, StubSimulator
 def _serving_pid(store, exclude=()):
     beats = [r for r in store.scratch if r.get("kind") == "heartbeat"]
     for r in reversed(beats):
-        pid = int(str(r["instance"]).rsplit("-", 1)[-1])
+        pid = int(str(r["host"]).rsplit("-", 1)[-1])
         if pid not in exclude:
             return pid
     return None

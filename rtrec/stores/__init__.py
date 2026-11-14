@@ -44,13 +44,13 @@ def make_store(kind: str | None = None, **kw):
         from .rawtree import RawTreeStore
         return RawTreeStore.from_env()
     if kind == "fake":
-        from rtrec.runtime.clock import OffsetClock
+        from rtrec.runtime.clock import RealClock
 
         from .fake import FakeStore
         sim = make_simulator(seed=kw.get("seed", 0), rate_multiplier=kw.get("rate_multiplier", 1.0),
                              small=kw.get("small", False))
         warm_up(sim)
-        # real time, starting at the simulator's stream_start (Server picks the clock up from store.clock)
-        clock = OffsetClock(getattr(sim, "stream_start", None) or __import__("time").time())
-        return FakeStore(sim, clock, track_expected=kw.get("track_expected", False))
+        # wall clock, like RawTree. The store opens *after* the warm-up: requests the simulator emitted
+        # while its history was building are dropped as pre-opening (nobody could have answered them).
+        return FakeStore(sim, RealClock(), track_expected=kw.get("track_expected", False))
     raise ValueError(f"unknown store {kind!r}")
