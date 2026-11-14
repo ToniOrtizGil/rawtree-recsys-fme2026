@@ -38,36 +38,43 @@ class Prepared:
     X: np.ndarray
     y: np.ndarray
     groups: np.ndarray
+    c: np.ndarray            # click labels (y = purchase labels)
     cuts: tuple[float, float, float, float]
     test_sessions: pd.DataFrame
     test_events: pd.DataFrame
 
 
-def prepare(catalog: pd.DataFrame, sessions: pd.DataFrame, events: pd.DataFrame, a: float = 0.5, b: float = 0.85,
+def prepare(catalog: pd.DataFrame, sessions: pd.DataFrame, events: pd.DataFrame, a: float = 0.35, b: float = 0.85,
             sample: float = 1.0, log=print) -> Prepared:
     t0, ta, tb, t1 = time_cuts(sessions, a, b)
     tic = time.time()
     s_a, e_a = window(sessions, t0, ta), window(events, t0 - 1e9, ta)
     state, feed = state_from_history(catalog, s_a, e_a)
     log(f"artefacts from {len(s_a)} sessions / {len(e_a)} events in {time.time() - tic:.1f}s")
-    X, y, g = build_rows(state, feed, sessions, events, ta, tb, sample=sample)
-    log(f"training rows {len(y)} (positives {int(y.sum())}) in {time.time() - tic:.1f}s")
-    return Prepared(state, feed, X, y, g, (t0, ta, tb, t1), window(sessions, tb, t1 + 1), window(events, tb, t1 + 1))
+    X, y, c, g = build_rows(state, feed, sessions, events, ta, tb, sample=sample)
+    log(f"training rows {len(y)} (purchases {int(y.sum())}, clicks {int(c.sum())}) in {time.time() - tic:.1f}s")
+    return Prepared(state, feed, X, y, g, c, (t0, ta, tb, t1), window(sessions, tb, t1 + 1),
+                    window(events, tb, t1 + 1))
 
 
-def fit(p: Prepared, val_frac: float = 0.15, rounds: int = 400, log=print):
+def fit(p: Prepared, val_frac: float = 0.15, rounds: int = 600, log=print):
     """Train on the earlier part of the training window, early-stop on its last `val_frac` (by time)."""
     n_imp = int(p.groups.max()) + 1 if len(p.groups) else 0
     cut = int(n_imp * (1 - val_frac))
-    tr, va = p.groups < cut, p.groups >= cut
-    booster = rk.train(p.X[tr], p.y[tr], p.X[va], p.y[va], rounds=rounds)
-    pv = rk.predict(booster, p.X[va]) if va.any() else np.array([])
-    metrics = {"train_rows": int(tr.sum()), "val_rows": int(va.sum()), "best_iter": booster.best_iteration}
+    va = p.groups >= cut
+    model, metrics = rk.train(p.X, p.y, p.c, va, rounds=rounds)
+    metrics.update(train_rows=int((~va).sum()), val_rows=int(va.sum()))
+    pv = model.predict(p.X[va]) if va.any() else np.array([])
     if va.any() and 0 < p.y[va].sum() < va.sum():
         metrics["val_auc"] = float(roc_auc_score(p.y[va], pv))
         metrics["val_logloss"] = float(log_loss(p.y[va], np.clip(pv, 1e-6, 1 - 1e-6)))
-    imp = booster.feature_importance("gain")
-    metrics["top_features"] = [f for _, f in sorted(zip(imp, booster.feature_name()), reverse=True)[:12]]
+        metrics["val_pred_mean"], metrics["val_obs_mean"] = float(pv.mean()), float(p.y[va].mean())
+    booster = model
+    for part in ("click", "buy"):
+        b = getattr(model, part)
+        if b is not None:
+            imp = b.feature_importance("gain")
+            metrics[f"top_{part}_features"] = [f for _, f in sorted(zip(imp, b.feature_name()), reverse=True)[:10]]
     log(f"ranker: {metrics}")
     return booster, metrics
 

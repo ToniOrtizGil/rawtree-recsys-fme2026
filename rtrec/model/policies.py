@@ -21,6 +21,7 @@ from . import ranker as rk
 from .candidates import generate
 from .features import F_INDEX as F
 from .features import featurize
+from rtrec.validate import finalize
 
 
 DEFAULT_MODEL = Path(os.environ.get("RTREC_MODEL", "artifacts/ranker.txt"))
@@ -55,7 +56,9 @@ class BaselinePolicy:
         ensure_offline(state, dump, model_path="/nonexistent")
 
     def recommend(self, req: Request, state: State) -> list[str]:
-        return list(state.offline.get("best_sellers") or state.safe_list)[:60]
+        avail = state.available
+        out = [p for p in (state.offline.get("best_sellers") or state.safe_list) if p in avail][:10]
+        return out if len(out) == 10 else finalize(out, state)
 
 
 def heuristic_scores(X: np.ndarray) -> np.ndarray:

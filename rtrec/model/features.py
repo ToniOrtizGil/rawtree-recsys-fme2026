@@ -14,7 +14,7 @@ import numpy as np
 from rtrec.contract import State
 from rtrec.schemas import Request
 
-from .artefacts import ProdStats, SubStats
+from .artefacts import ProdStats, SubStats, tokenize
 from .util import context, to_epoch, view_ids
 
 DEVICES = {"web": 0, "ios": 1, "android": 2}
@@ -30,7 +30,9 @@ FEATURES = [
     # user profile (history + live)
     "user_sub_aff", "user_cat_aff", "user_bought", "user_bought_sub", "user_carted", "is_new_user",
     # context
-    "device", "page", "hour",
+    "device", "page", "hour", "ctx_cat_region", "ctx_cat_device", "price_appetite_x_price",
+    # content (description words: the style a shopper likes, works for brand-new products)
+    "desc_sim_session", "desc_sim_user",
     # live stream
     "trend_prod", "trend_sub", "log_live_pop", "log_buy_rate", "price_to_base", "price_last_change",
     # carousel slot (training: the logged slot; serving: 0)
@@ -41,6 +43,10 @@ F_INDEX = {f: i for i, f in enumerate(FEATURES)}
 _EMPTY_P = ProdStats(0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
 _EMPTY_S = SubStats(0.0, 0.0, 1.0, 0.0, 0.0)
 DECAY = 0.7  # weight of the k-th most recent view = DECAY**k
+
+
+def _sim(ws: frozenset[str], bag: dict[str, float], idf: dict[str, float]) -> float:
+    return sum(bag.get(t, 0.0) * idf.get(t, 1.0) for t in ws)
 
 
 def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slot: int | list[int] = 0,
@@ -84,6 +90,19 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
                 cov[q] = cov.get(q, 0.0) + w * 0.1 * c
     vmed = float(np.median(vprices)) if vprices else 0.0
 
+    # --- content: idf-weighted description words of what they viewed (session) and engaged with (profile) ---
+    toks, idf = off.get("tokens", {}), off.get("idf", {})
+
+    def words(pid: str) -> frozenset[str]:
+        t = toks.get(pid)
+        return t if t is not None else tokenize((cat.get(pid) or {}).get("description", ""))
+
+    s_words: dict[str, float] = {}
+    for k, v in enumerate(views[:10]):
+        for tok in words(v):
+            s_words[tok] = s_words.get(tok, 0.0) + DECAY ** k * idf.get(tok, 1.0)
+    s_norm = sum(s_words.values()) or 1.0
+
     # --- user profile summary ---
     prof = state.users.get(req.get("user_id", ""))
     u_sub: dict[str, float] = {}
@@ -104,7 +123,16 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
             if p:
                 bought_sub.add(p["subcategory"])
         carted = {pid for _, pid in prof.carts}
+    u_words: dict[str, float] = {}
+    if prof is not None:
+        for _, pid in (prof.purchases[-20:] + prof.carts[-20:] + prof.views[-30:]):
+            for tok in words(pid):
+                u_words[tok] = u_words.get(tok, 0.0) + idf.get(tok, 1.0)
+    u_wnorm = sum(u_words.values()) or 1.0
     u_tot = sum(u_sub.values()) or 1.0
+    _, region, _ = context(req)
+    ctx_cat, ctx_price = off.get("ctx_cat", {}), off.get("ctx_price", {})
+    appetite = ctx_price.get(region, 0.0) + ctx_price.get(device, 0.0)
     new_user = 1.0 if req.get("is_new_user") else 0.0
 
     # live keys written by rtrec.live (docs/LIVE.md); all optional
@@ -143,7 +171,10 @@ def featurize(req: Request, state: State, cands: dict[str, int] | list[str], slo
             ss.conv, ss.car_lift, 1.0 if pid in new else 0.0, (t - created) / 86400.0 if created else -1.0,
             u_sub.get(sub, 0.0) / u_tot, u_cat.get(ca, 0.0) / u_tot, 1.0 if pid in bought else 0.0,
             1.0 if sub in bought_sub else 0.0, 1.0 if pid in carted else 0.0, new_user,
-            dev_i, page_i, hour,
+            dev_i, page_i, hour, ctx_cat.get((region, ca), 0.0), ctx_cat.get((device, ca), 0.0),
+            appetite * math.log(price / 30.0),
+            _sim(words(pid), s_words, idf) / s_norm if s_words else 0.0,
+            _sim(words(pid), u_words, idf) / u_wnorm if u_words else 0.0,
             tp.get(pid, 1.0), tsub.get(sub, 1.0), math.log1p(pop.get(pid, 0.0)), math.log1p(buy.get(pid, 0.0)),
             pinfo.ratio_to_base if pinfo else 1.0, pinfo.last_change_ratio if pinfo else 1.0,
             slots[i],

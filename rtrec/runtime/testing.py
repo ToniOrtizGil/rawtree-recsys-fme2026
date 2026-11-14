@@ -17,7 +17,7 @@ from .serve import ServeConfig, Server
 class SimEnv:
     def __init__(self, seed: int = 1, sim=None, params: StubParams | None = None, faults: Faults | None = None,
                  track_expected: bool = False, **store_kw):
-        self.clock = SimClock()
+        self.clock = SimClock(start=getattr(sim, "stream_start", None) or 1_763_110_800.0)
         self.sim = sim or StubSimulator(seed=seed, start=self.clock.now(), params=params)
         self.store = FakeStore(self.sim, self.clock, faults=faults, track_expected=track_expected, **store_kw)
 

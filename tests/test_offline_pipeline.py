@@ -20,6 +20,7 @@ def test_train_export_load_and_serve(tmp_path):
     p = prepare(dump.catalog, dump.history_sessions, dump.history_events, log=lambda *_: None)
     assert p.X.shape[1] == len(FEATURES) and p.y.sum() > 0
     booster, metrics = fit(p, rounds=50, log=lambda *_: None)
+    assert booster.buy is not None
     path = tmp_path / "ranker.txt"
     rk.save(booster, path, metrics)
     loaded = rk.load(path)
@@ -49,3 +50,14 @@ def test_arbiter_accepts_our_policies():
     rep = arb.run(arb.load("rtrec.model.policies:SessionHeuristicPolicy"), sim, 30, 60, sim.now)
     d = rep.as_dict()
     assert d["requests"] > 50 and d["policy_errors"] == 0 and d["invalid_before_finalize"] == 0
+
+
+def test_stream_log_collects_judged_rows():
+    from rtrec.offline.replay import state_from_history
+    from rtrec.offline.streamlog import collect
+    sim = make_simulator(seed=6, n_products=150, n_users=80)
+    d = sim.history(days=4, sessions_per_day=100)
+    state, feed = state_from_history(d.catalog, d.history_sessions, d.history_events)
+    X, y, c, g = collect(sim, state, feed, SessionHeuristicPolicy(), minutes=1.0, log=lambda *_: None)
+    assert X.shape == (len(y), len(FEATURES)) and len(y) == len(c) == len(g) and len(y) % 10 == 0
+    assert y.sum() <= c.sum() and y.sum() > 0

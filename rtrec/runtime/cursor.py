@@ -7,6 +7,7 @@ keys older than the window are forgotten.
 """
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterable
 
 from .clock import parse_ts
@@ -19,9 +20,14 @@ class Cursor:
         self.window = window             # how long to remember keys behind `position`
         self._seen: dict[object, float] = {}
         self._prune_at = 4096
+        self._lock = threading.Lock()   # two hedged pollers may share one cursor
 
     def filter(self, rows: Iterable[dict]) -> list[dict]:
         """Rows not seen before, in input order; advances the position."""
+        with self._lock:
+            return self._filter(rows)
+
+    def _filter(self, rows: Iterable[dict]) -> list[dict]:
         fresh = []
         for r in rows:
             k = self.key(r)
