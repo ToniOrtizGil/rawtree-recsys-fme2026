@@ -107,10 +107,10 @@ class FakeStore:
         self.calls = Counter()
 
     def _initial_catalog(self) -> list[Product]:
-        if hasattr(self.sim, "catalog_at_start"):
-            return self.sim.catalog_at_start()
-        df = self.sim.history(days=1).catalog
-        return df.to_dict("records")
+        for name in ("catalog_at_start", "catalog"):        # stub / A2's ShopSimulator
+            if callable(getattr(self.sim, name, None)):
+                return getattr(self.sim, name)()
+        return self.sim.history(days=1).catalog.to_dict("records")
 
     # ------------------------------------------------------------------ fault injection
     def _call(self, kind: str, write: bool = False):
@@ -144,6 +144,8 @@ class FakeStore:
         tick = self.sim.advance(t)
         for r in tick.requests:
             ts = parse_ts(r["ts"])
+            if ts < self._t0:
+                continue   # the simulator pre-warms before our store opened: nobody could answer those
             rec = _ReqRecord(req=r, ts=ts, visible_at=ts + self.visibility_delay)
             self.requests[r["request_id"]] = rec
             self._req_list.append(rec)
@@ -171,12 +173,19 @@ class FakeStore:
             if rec.ts + DEADLINE_S + self.feedback_delay > t:
                 break   # _req_list is in ts order: nothing later is due yet
             if rec.feedback is None:
-                rec.feedback = Feedback(request_id=rec.req["request_id"], ts=to_iso(t), shown=[],
-                                        served_by="fallback", fallback_reason="missing", latency_ms=0.0,
-                                        clicked="", purchased="", revenue_eur=0.0)
+                if callable(getattr(self.sim, "judge_missing", None)):
+                    rec.feedback = self.sim.judge_missing(rec.req["request_id"])
+                else:
+                    rec.feedback = Feedback(request_id=rec.req["request_id"], ts=to_iso(t), shown=[],
+                                            served_by="fallback", fallback_reason="missing", latency_ms=0.0,
+                                            clicked="", purchased="", revenue_eur=0.0)
             if not rec.fb_emitted:
+                # the simulator may stamp its own (later) feedback time; never publish before it
+                due = max(rec.ts + DEADLINE_S + self.feedback_delay, parse_ts(rec.feedback.get("ts")))
+                if due > t:
+                    continue
                 fb = dict(rec.feedback)
-                fb["ts"] = to_iso(max(t, rec.ts + DEADLINE_S + self.feedback_delay))
+                fb["ts"] = to_iso(due)
                 self.feedback.append(fb)
                 rec.fb_emitted = True
         while self._req_list and self._req_list[0].fb_emitted:
@@ -237,20 +246,33 @@ class FakeStore:
         with self._lock:
             return self._since(self.feedback, cursor, limit)
 
-    def scratch_since(self, cursor: float, kind: str | None = None, limit: int = 10_000) -> list[dict]:
-        """Not in the Store protocol: used by standby mode to read heartbeats."""
+    def scratch_since(self, cursor: float, limit: int = 50_000, kind: str | None = None) -> list[dict]:
+        """Scratch rows with ts > cursor - overlap (rows carry an ISO `ts`), optionally of one kind."""
         self._call("scratch")
+        lo = cursor - self.overlap
         with self._lock:
             return [dict(r) for r in self.scratch
-                    if float(r.get("ts_epoch", 0)) > cursor and (kind is None or r.get("kind") == kind)][:limit]
+                    if parse_ts(r.get("ts") or r.get("ts_epoch")) > lo and (kind is None or r.get("kind") == kind)
+                    ][:limit]
+
+    def submissions_since(self, cursor: float, limit: int = 50_000) -> list[Submission]:
+        """Our own answers that landed after cursor - overlap (RawTree has no ts on submissions; here
+        we know the landing time)."""
+        self._call("submissions")
+        lo = cursor - self.overlap
+        now = self.clock.now()
+        with self._lock:
+            return [dict(r) for at, r in self.submissions if lo < at <= now][:limit]
 
     def best_sellers(self) -> list[str]:
-        """Not in the protocol: the organisers' baseline ranking (all-time best sellers)."""
+        """Not in the protocol: the organisers' baseline ranking (all-time best sellers; ties: higher id first)."""
         if hasattr(self.sim, "best_sellers"):
             return list(self.sim.best_sellers())
-        hist = self.sim.history(days=60).history_events
-        buys = hist[hist["event_type"] == "purchase"].groupby("product_id").size()
-        return [p for p, _ in sorted(buys.items(), key=lambda kv: (-kv[1], kv[0]))]
+        if not hasattr(self, "_best"):
+            hist = self.sim.history(days=getattr(getattr(self.sim, "cfg", None), "history_days", 60)).history_events
+            buys = hist[hist["event_type"] == "purchase"].groupby("product_id").size()
+            self._best = [p for _, p in sorted(((int(n), str(p)) for p, n in buys.items()), reverse=True)]
+        return list(self._best)
 
     # ------------------------------------------------------------------ Store protocol: writes
     def insert_submissions(self, rows: list[Submission], dedup_token: str | None = None) -> None:
@@ -300,6 +322,8 @@ class FakeStore:
             "latency_landed_s": _pcts(landed),
             "expected_purchases_per_100": 100 * sum(exp) / n if exp and n else None,
             "model_versions": dict(mv),
+            # A2's simulator scores what it judged: team / baseline / oracle expected purchases, score
+            "sim": self.sim.report() if callable(getattr(self.sim, "report", None)) else None,
         }
 
 

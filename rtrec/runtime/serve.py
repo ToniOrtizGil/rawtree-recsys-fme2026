@@ -39,10 +39,10 @@ from rtrec.schemas import Submission
 from rtrec.validate import finalize
 
 from .catalog import CatalogTracker
-from .clock import RealClock, parse_ts
+from .clock import RealClock, parse_ts, to_iso
 from .cursor import Cursor, event_key, request_key, update_key
 from .heartbeat import Heartbeat, default_instance
-from .hooks import HookSet
+from .hooks import HOOK_NAMES, HookSet
 from .journal import Journal
 from .metrics import Metrics
 from .policies import RecentViewsPolicy
@@ -55,7 +55,8 @@ log = logging.getLogger("rtrec.serve")
 @dataclass
 class ServeConfig:
     poll_interval: float = 0.2          # shop.requests polling (organisers' baseline: 0.3 s)
-    catalog_interval: float = 0.5       # stock must be exact: refresh at least every 0.5 s
+    request_pollers: int = 2            # staggered pollers: one stalled HTTP call never delays a request
+    catalog_interval: float = 0.25      # stock must be exact: one stock-out invalidates the whole answer
     events_interval: float = 1.0
     feedback_interval: float = 2.0
     heartbeat_interval: float = 0.5
@@ -82,7 +83,8 @@ class Server:
                  state: State | None = None):
         self.store = store
         self.cfg = config or ServeConfig()
-        self.clock = clock or RealClock()
+        # FakeStore carries its own (simulated or offset) clock: the loop must live on the same one
+        self.clock = clock or getattr(store, "clock", None) or RealClock()
         self.state = state or State()
         self.hooks = HookSet(hooks)
         self.metrics = Metrics()
@@ -95,7 +97,8 @@ class Server:
         self.journal = Journal(sd)
         self.writer = Writer(store, self.clock, self.journal, self.metrics, give_up_s=self.cfg.give_up_s)
         self.heartbeat = Heartbeat(store, self.clock, role=self.cfg.role, instance=self.cfg.instance,
-                                   takeover_after_s=self.cfg.takeover_after_s)
+                                   takeover_after_s=self.cfg.takeover_after_s,
+                                   model_version=lambda: self.runner.name)
         now = self.clock.now()
         self.cur_requests = Cursor(request_key, start=now - self.cfg.request_lookback_s, window=60)
         self.cur_updates = Cursor(update_key, start=0.0, window=120)
@@ -373,8 +376,8 @@ class Server:
 
     def _scratch_status(self, s: dict) -> None:
         try:
-            self.store.insert_scratch([{"kind": "runtime_status", "instance": self.cfg.instance,
-                                        "ts_epoch": s["now"], "status": json.dumps(s, default=str)}])
+            self.store.insert_scratch([{"kind": "runtime_status", "ts": to_iso(s["now"]), "ts_epoch": s["now"],
+                                        "instance": self.cfg.instance, "status": json.dumps(s, default=str)}])
         except Exception:  # noqa: BLE001
             self.metrics.inc("status_write_errors")
 
@@ -447,8 +450,9 @@ class Server:
             return None
 
     # ================================================================== threaded mode (production)
-    def _poller(self, what: str, fetch, interval: float, sink) -> None:
+    def _poller(self, what: str, fetch, interval: float, sink, offset: float = 0.0) -> None:
         errors = 0
+        self._stop.wait(offset)
         while not self._stop.is_set():
             t0 = time.monotonic()
             try:
@@ -474,15 +478,17 @@ class Server:
         if not self.started:
             self.start()
         c = self.cfg
-        specs = [
-            ("requests", self.fetch_requests, c.poll_interval, self._req_q.put),
+        n_req = max(1, c.request_pollers)
+        specs = [("requests", self.fetch_requests, c.poll_interval, self._req_q.put, i * c.poll_interval / n_req)
+                 for i in range(n_req)]
+        specs += [
             ("catalog", self.fetch_catalog, c.catalog_interval, lambda rows: self._upd_q.put(("catalog", rows))),
             ("events", self.fetch_events, c.events_interval, lambda rows: self._upd_q.put(("events", rows))),
             ("feedback", self.fetch_feedback, c.feedback_interval, lambda rows: self._upd_q.put(("feedback", rows))),
         ]
-        for name, fetch, every, sink in specs:
-            self._threads.append(threading.Thread(target=self._poller, args=(name, fetch, every, sink),
-                                                  name=f"poll-{name}", daemon=True))
+        for i, (name, fetch, every, sink, *offset) in enumerate(specs):
+            self._threads.append(threading.Thread(target=self._poller, args=(name, fetch, every, sink, *offset),
+                                                  name=f"poll-{name}-{i}", daemon=True))
         self._threads.append(threading.Thread(target=self.writer.run, args=(self._stop,), name="writer",
                                               daemon=True))
         self._threads.append(threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True))
@@ -523,16 +529,29 @@ class Server:
             self.writer.flush_once()
             time.sleep(0.01)
         self.runner.shutdown()
+        if self.writer._pool:
+            self.writer._pool.shutdown(wait=False)
         self.save_snapshot()
         self.journal.close()
 
 
 # ====================================================================== CLI
 def _load_obj(spec: str):
-    """'pkg.module:attr' -> attr (called if it is a factory function or class)."""
+    """'pkg.module:attr' -> the attribute (a class, a factory function or an instance)."""
     mod, _, attr = spec.partition(":")
-    obj = getattr(importlib.import_module(mod), attr or "make")
-    return obj
+    return getattr(importlib.import_module(mod), attr or "make")
+
+
+def as_factory(obj):
+    """Class or factory function -> call it later; ready-made instance -> return it.
+    (A class also has the instance's methods as attributes, so test isinstance(type) first.)"""
+    if isinstance(obj, type):
+        return obj                                   # a class: instantiate it
+    if hasattr(obj, "recommend") or any(hasattr(obj, h) for h in HOOK_NAMES):
+        return lambda: obj                           # already an instance
+    if callable(obj):
+        return obj                                   # a factory function
+    raise TypeError(f"{obj!r} is neither a class, a factory nor a policy/hook instance")
 
 
 def build_store(kind: str, args):
@@ -557,14 +576,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=args.log_level, stream=sys.stdout,
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     store = build_store(args.store, args)
-    factory = None
-    if args.policy:
-        obj = _load_obj(args.policy)
-        factory = obj if callable(obj) and not hasattr(obj, "recommend") else (lambda: obj)
-    hooks = []
-    for spec in filter(None, args.hooks.split(",")):
-        obj = _load_obj(spec.strip())
-        hooks.append(obj() if callable(obj) and not hasattr(obj, "on_events") else obj)
+    factory = as_factory(_load_obj(args.policy)) if args.policy else None
+    hooks = [as_factory(_load_obj(spec.strip()))() for spec in filter(None, args.hooks.split(","))]
     cfg = ServeConfig(role=args.role, state_dir=args.state_dir)
     server = Server(store, policy_factory=factory, hooks=hooks, config=cfg)
     signal.signal(signal.SIGTERM, lambda *_: server._stop.set())
